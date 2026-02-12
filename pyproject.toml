@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obsidian-self-mcp"
+version = "0.1.0"
+description = "MCP server and CLI for Obsidian vault via CouchDB LiveSync — no app required"
+requires-python = ">=3.10"
+license = "MIT"
+readme = "README.md"
+authors = [
+    { name = "Suhas Vemuri" },
+]
+keywords = ["obsidian", "mcp", "couchdb", "livesync", "cli", "vault"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "httpx>=0.27.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/suhasvemuri/obsidian-self-mcp"
+Repository = "https://github.com/suhasvemuri/obsidian-self-mcp"
+Issues = "https://github.com/suhasvemuri/obsidian-self-mcp/issues"
+
+[project.scripts]
+obsidian = "obsidian_self_mcp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
