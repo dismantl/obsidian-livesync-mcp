@@ -113,6 +113,108 @@ async def delete_note(path: str) -> str:
 
 
 @mcp.tool()
+async def read_frontmatter(path: str) -> str:
+    """Read frontmatter properties from a note.
+
+    Args:
+        path: Vault path to the note (e.g. "Notes/todo.md")
+    """
+    client = _get_client()
+    fm = await client.read_frontmatter(path)
+    if fm is None:
+        return f"No frontmatter found in: {path}"
+    lines = [f"{k}: {v}" for k, v in fm.items()]
+    return f"Frontmatter for {path}:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def update_frontmatter(path: str, properties_json: str) -> str:
+    """Update or set frontmatter properties on a note.
+
+    Args:
+        path: Vault path to the note
+        properties_json: JSON string of properties to set (e.g. '{"status": "done", "tags": ["project", "active"]}')
+    """
+    import json
+    try:
+        properties = json.loads(properties_json)
+    except json.JSONDecodeError as e:
+        return f"Invalid JSON: {e}"
+    if not isinstance(properties, dict):
+        return "properties_json must be a JSON object"
+    client = _get_client()
+    await client.update_frontmatter(path, properties)
+    return f"Updated frontmatter for: {path}"
+
+
+@mcp.tool()
+async def list_tags(folder: str | None = None) -> str:
+    """List all tags in the vault with occurrence counts.
+
+    Args:
+        folder: Optional folder to restrict scan
+    """
+    client = _get_client()
+    tags = await client.list_tags(folder=folder)
+    if not tags:
+        return "No tags found."
+    lines = [f"  #{tag}  ({count})" for tag, count in tags.items()]
+    return f"Found {len(tags)} tags:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def search_by_tag(
+    tag: str, folder: str | None = None, limit: int = 20
+) -> str:
+    """Find notes containing a specific tag.
+
+    Args:
+        tag: Tag to search for (with or without #)
+        folder: Optional folder to restrict search
+        limit: Max results (default 20)
+    """
+    client = _get_client()
+    notes = await client.search_by_tag(tag=tag, folder=folder, limit=limit)
+    if not notes:
+        return f"No notes found with tag: #{tag}"
+    lines = [f"  {n.path}" for n in notes]
+    return f"Found {len(notes)} notes with #{tag}:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def get_backlinks(path: str) -> str:
+    """Find notes that link to this note via wikilinks.
+
+    Args:
+        path: Vault path to the target note
+    """
+    client = _get_client()
+    backlinks = await client.get_backlinks(path)
+    if not backlinks:
+        return f"No backlinks found for: {path}"
+    lines = []
+    for bl in backlinks:
+        ctx = f" — {bl.context}" if bl.context else ""
+        lines.append(f"  {bl.source_path}{ctx}")
+    return f"Found {len(backlinks)} backlinks for {path}:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+async def get_outbound_links(path: str) -> str:
+    """List wikilinks from a note (outbound links).
+
+    Args:
+        path: Vault path to the note
+    """
+    client = _get_client()
+    links = await client.get_outbound_links(path)
+    if not links:
+        return f"No outbound links in: {path}"
+    lines = [f"  [[{link}]]" for link in links]
+    return f"Found {len(links)} outbound links in {path}:\n" + "\n".join(lines)
+
+
+@mcp.tool()
 async def list_folders() -> str:
     """List all folders in the Obsidian vault with note counts."""
     client = _get_client()

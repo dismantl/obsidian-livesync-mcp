@@ -81,6 +81,76 @@ async def _cmd_delete(client: ObsidianVaultClient, args):
     print(f"Deleted: {args.path}")
 
 
+async def _cmd_props(client: ObsidianVaultClient, args):
+    if args.set:
+        properties = {}
+        for pair in args.set:
+            if "=" not in pair:
+                print(f"Invalid format (use key=value): {pair}", file=sys.stderr)
+                sys.exit(1)
+            k, v = pair.split("=", 1)
+            # Try to parse as JSON for lists/bools/numbers, fall back to string
+            import json
+            try:
+                v = json.loads(v)
+            except json.JSONDecodeError:
+                pass
+            properties[k.strip()] = v
+        await client.update_frontmatter(args.path, properties)
+        print(f"Updated frontmatter for: {args.path}")
+    else:
+        fm = await client.read_frontmatter(args.path)
+        if fm is None:
+            print(f"No frontmatter in: {args.path}")
+            return
+        for k, v in fm.items():
+            print(f"  {k}: {v}")
+
+
+async def _cmd_tags(client: ObsidianVaultClient, args):
+    if args.find:
+        notes = await client.search_by_tag(
+            tag=args.find, folder=args.folder, limit=args.n
+        )
+        if not notes:
+            print(f"No notes with tag: #{args.find}")
+            return
+        for n in notes:
+            print(f"  {n.path}")
+        print(f"\n{len(notes)} notes")
+    else:
+        tags = await client.list_tags(folder=args.folder)
+        if not tags:
+            print("No tags found.")
+            return
+        for tag, count in tags.items():
+            print(f"  #{tag}  ({count})")
+        print(f"\n{len(tags)} tags")
+
+
+async def _cmd_backlinks(client: ObsidianVaultClient, args):
+    backlinks = await client.get_backlinks(args.path)
+    if not backlinks:
+        print(f"No backlinks for: {args.path}")
+        return
+    for bl in backlinks:
+        ctx = f"  > {bl.context}" if bl.context else ""
+        print(f"  {bl.source_path}")
+        if ctx:
+            print(ctx)
+    print(f"\n{len(backlinks)} backlinks")
+
+
+async def _cmd_links(client: ObsidianVaultClient, args):
+    links = await client.get_outbound_links(args.path)
+    if not links:
+        print(f"No outbound links in: {args.path}")
+        return
+    for link in links:
+        print(f"  [[{link}]]")
+    print(f"\n{len(links)} links")
+
+
 async def _cmd_folders(client: ObsidianVaultClient, args):
     folders = await client.list_folders()
     if not folders:
@@ -130,6 +200,25 @@ def main():
     p_delete.add_argument("path", help="Vault path")
     p_delete.add_argument("-y", action="store_true", help="Skip confirmation")
 
+    # props
+    p_props = sub.add_parser("props", help="Read/set frontmatter properties")
+    p_props.add_argument("path", help="Vault path to the note")
+    p_props.add_argument("--set", nargs="+", metavar="KEY=VALUE", help="Set properties")
+
+    # tags
+    p_tags = sub.add_parser("tags", help="List tags or find notes by tag")
+    p_tags.add_argument("folder", nargs="?", help="Folder to filter")
+    p_tags.add_argument("--find", metavar="TAG", help="Find notes with this tag")
+    p_tags.add_argument("-n", type=int, default=20, help="Limit (default 20)")
+
+    # backlinks
+    p_backlinks = sub.add_parser("backlinks", help="Find notes linking to this note")
+    p_backlinks.add_argument("path", help="Vault path to the target note")
+
+    # links
+    p_links = sub.add_parser("links", help="Show outbound wikilinks from a note")
+    p_links.add_argument("path", help="Vault path to the note")
+
     # folders / tree
     sub.add_parser("folders", aliases=["tree"], help="List folders")
 
@@ -142,6 +231,10 @@ def main():
         "search": _cmd_search, "grep": _cmd_search,
         "append": _cmd_append,
         "delete": _cmd_delete, "rm": _cmd_delete,
+        "props": _cmd_props,
+        "tags": _cmd_tags,
+        "backlinks": _cmd_backlinks,
+        "links": _cmd_links,
         "folders": _cmd_folders, "tree": _cmd_folders,
     }
 

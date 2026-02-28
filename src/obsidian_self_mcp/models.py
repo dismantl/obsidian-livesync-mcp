@@ -54,6 +54,15 @@ class SearchResult:
 
 
 @dataclass
+class BacklinkInfo:
+    source_path: str
+    context: str  # surrounding text snippet
+
+    def to_dict(self) -> dict:
+        return {"source_path": self.source_path, "context": self.context}
+
+
+@dataclass
 class FolderInfo:
     path: str
     note_count: int

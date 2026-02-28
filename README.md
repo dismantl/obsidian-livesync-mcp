@@ -19,6 +19,22 @@ If you use Obsidian LiveSync, your vault is already stored in CouchDB. This tool
 
 Obsidian has an [official CLI](https://obsidian.md/blog/introducing-obsidian-cli/) that requires the Obsidian desktop app running locally and a Catalyst license. This project requires neither — just a CouchDB instance with LiveSync data.
 
+| Feature | Official CLI | obsidian-self-mcp |
+|---------|-------------|-------------------|
+| **Requires Obsidian app** | Yes (must be running) | No |
+| **Requires Catalyst license** | Yes ($25+) | No (MIT, free) |
+| **Read/write notes** | Yes | Yes |
+| **Search** | Yes | Yes |
+| **Frontmatter/properties** | Yes | Yes |
+| **Tags** | Yes | Yes |
+| **Backlinks** | Yes (via app index) | Yes (content scanning) |
+| **Templates** | Yes | No (planned) |
+| **Canvas** | Yes | No |
+| **Graph view** | No | No |
+| **Works headless/CI** | No | Yes |
+| **MCP server** | No | Yes |
+| **Transport** | Local REST API | CouchDB (network) |
+
 ## Requirements
 
 - Python 3.10+
@@ -105,6 +121,12 @@ Add to your Claude Code settings (`.claude/settings.json` or global):
 | `append_note` | Append content to an existing note |
 | `delete_note` | Delete a note and its chunks |
 | `list_folders` | List all folders with note counts |
+| `read_frontmatter` | Read frontmatter properties from a note |
+| `update_frontmatter` | Set/update frontmatter properties (JSON input) |
+| `list_tags` | List all tags in the vault with counts |
+| `search_by_tag` | Find notes containing a specific tag |
+| `get_backlinks` | Find notes that link to a given note |
+| `get_outbound_links` | List wikilinks from a note |
 
 ## CLI Usage
 
@@ -135,6 +157,20 @@ obsidian append "Notes/log.md" "New entry"
 # Delete a note
 obsidian delete "Notes/old.md"
 obsidian rm "Notes/old.md" -y            # skip confirmation
+
+# Frontmatter properties
+obsidian props "Notes/todo.md"                      # read properties
+obsidian props "Notes/todo.md" --set status=done     # set a property
+obsidian props "Notes/todo.md" --set 'tags=["a","b"]' status=active
+
+# Tags
+obsidian tags                            # list all tags with counts
+obsidian tags "Dev Projects"             # tags in a folder
+obsidian tags --find "project"           # find notes with a tag
+
+# Backlinks and links
+obsidian backlinks "Notes/todo.md"       # notes linking to this note
+obsidian links "Notes/todo.md"           # outbound wikilinks from this note
 
 # List folders
 obsidian folders

@@ -8,8 +8,16 @@ from collections import defaultdict
 import httpx
 
 from .config import Config
-from .models import FolderInfo, NoteContent, NoteMetadata, SearchResult
-from .utils import encode_doc_id, generate_chunk_id, normalize_doc_id
+from .models import BacklinkInfo, FolderInfo, NoteContent, NoteMetadata, SearchResult
+from .utils import (
+    encode_doc_id,
+    extract_frontmatter,
+    extract_tags,
+    extract_wikilinks,
+    generate_chunk_id,
+    normalize_doc_id,
+    set_frontmatter,
+)
 
 CHUNK_SIZE = 10000  # ~10KB chunks for binary
 BINARY_EXTENSIONS = {
@@ -420,3 +428,134 @@ class ObsidianVaultClient:
             ))
         results.sort(key=lambda r: r.matches, reverse=True)
         return results[:limit]
+
+    # ── Frontmatter operations ─────────────────────────────────────
+
+    async def read_frontmatter(self, path: str) -> dict | None:
+        """Read and parse frontmatter from a note. Returns None if no frontmatter."""
+        note = await self.read_note(path)
+        if not note or note.is_binary:
+            return None
+        fm, _ = extract_frontmatter(note.content)
+        return fm
+
+    async def update_frontmatter(self, path: str, properties: dict) -> bool:
+        """Merge properties into a note's frontmatter. Creates frontmatter if absent."""
+        note = await self.read_note(path)
+        if not note:
+            raise ValueError(f"Note not found: {path}")
+        if note.is_binary:
+            raise ValueError(f"Cannot set frontmatter on binary file: {path}")
+        new_content = set_frontmatter(note.content, properties)
+        return await self.write_note(path, new_content)
+
+    # ── Tag operations ─────────────────────────────────────────────
+
+    async def _read_note_content(self, doc: dict) -> str | None:
+        """Read content from a file doc (fetch + reassemble chunks)."""
+        chunk_ids = doc.get("children", [])
+        if not chunk_ids:
+            return None
+        chunks = await self._fetch_chunks(chunk_ids)
+        return "".join(chunks.get(cid, "") for cid in chunk_ids)
+
+    async def list_tags(self, folder: str | None = None) -> dict[str, int]:
+        """Scan all notes and return tag -> count mapping."""
+        all_docs = await self._get_all_file_docs()
+        if folder:
+            folder_lower = folder.strip("/").lower() + "/"
+            all_docs = [
+                d for d in all_docs
+                if d.get("_id", "").lstrip("/").startswith(folder_lower)
+            ]
+
+        tag_counts: dict[str, int] = defaultdict(int)
+        for doc in all_docs:
+            if doc.get("type") == "newnote":
+                continue
+            content = await self._read_note_content(doc)
+            if not content:
+                continue
+            for tag in extract_tags(content):
+                tag_counts[tag] += 1
+
+        return dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True))
+
+    async def search_by_tag(
+        self, tag: str, folder: str | None = None, limit: int = 20
+    ) -> list[NoteMetadata]:
+        """Find notes containing a specific tag (frontmatter or inline)."""
+        all_docs = await self._get_all_file_docs()
+        if folder:
+            folder_lower = folder.strip("/").lower() + "/"
+            all_docs = [
+                d for d in all_docs
+                if d.get("_id", "").lstrip("/").startswith(folder_lower)
+            ]
+
+        results = []
+        tag_lower = tag.lower().lstrip("#")
+        for doc in all_docs:
+            if doc.get("type") == "newnote":
+                continue
+            content = await self._read_note_content(doc)
+            if not content:
+                continue
+            note_tags = [t.lower() for t in extract_tags(content)]
+            if tag_lower in note_tags:
+                results.append(NoteMetadata(
+                    path=doc.get("path", doc["_id"]),
+                    size=doc.get("size", 0),
+                    ctime=doc.get("ctime", 0),
+                    mtime=doc.get("mtime", 0),
+                    doc_type=doc.get("type", "plain"),
+                    chunk_count=len(doc.get("children", [])),
+                ))
+                if len(results) >= limit:
+                    break
+        return results
+
+    # ── Link / backlink operations ─────────────────────────────────
+
+    async def get_outbound_links(self, path: str) -> list[str]:
+        """Extract wikilink targets from a single note."""
+        note = await self.read_note(path)
+        if not note or note.is_binary:
+            return []
+        return extract_wikilinks(note.content)
+
+    async def get_backlinks(self, path: str) -> list[BacklinkInfo]:
+        """Find all notes that contain a wikilink pointing to the given path."""
+        import re
+
+        # Normalize target: strip folder prefix and extension for matching
+        target_name = path.rsplit("/", 1)[-1]  # filename
+        if target_name.endswith(".md"):
+            target_name = target_name[:-3]
+        target_lower = target_name.lower()
+
+        all_docs = await self._get_all_file_docs()
+        results = []
+
+        for doc in all_docs:
+            doc_path = doc.get("path", doc.get("_id", ""))
+            if doc.get("type") == "newnote":
+                continue
+            content = await self._read_note_content(doc)
+            if not content:
+                continue
+
+            links = extract_wikilinks(content)
+            link_names_lower = [l.rsplit("/", 1)[-1].lower() for l in links]
+
+            if target_lower in link_names_lower:
+                # Extract context snippet around the link
+                pattern = re.compile(
+                    r"(?:^|\n)([^\n]*\[\[" + re.escape(target_name) + r"[^\]]*\]\][^\n]*)",
+                    re.IGNORECASE,
+                )
+                m = pattern.search(content)
+                ctx = m.group(1).strip() if m else ""
+                results.append(BacklinkInfo(source_path=doc_path, context=ctx))
+
+        return results
