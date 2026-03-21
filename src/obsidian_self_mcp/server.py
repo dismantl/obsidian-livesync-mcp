@@ -1,9 +1,15 @@
 """FastMCP server exposing Obsidian vault tools via stdio transport."""
 
+import functools
+import logging
+
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from .client import ObsidianVaultClient
 from .config import Config
+
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP("obsidian-self-mcp")
 _client: ObsidianVaultClient | None = None
@@ -16,7 +22,29 @@ def _get_client() -> ObsidianVaultClient:
     return _client
 
 
+def _tool_error_handler(func):
+    """Wrap MCP tool functions to return friendly error strings."""
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except ValueError as e:
+            return f"Error: {e}"
+        except httpx.HTTPStatusError as e:
+            logger.exception("CouchDB request failed")
+            return f"Error: CouchDB returned {e.response.status_code}"
+        except httpx.ConnectError:
+            return "Error: Could not connect to CouchDB. Check OBSIDIAN_COUCH_URL."
+        except Exception as e:
+            logger.exception("Unexpected error in tool %s", func.__name__)
+            return f"Error: {type(e).__name__}: {e}"
+
+    return wrapper
+
+
 @mcp.tool()
+@_tool_error_handler
 async def list_notes(
     folder: str | None = None, limit: int = 50, skip: int = 0
 ) -> str:
@@ -36,6 +64,7 @@ async def list_notes(
 
 
 @mcp.tool()
+@_tool_error_handler
 async def read_note(path: str) -> str:
     """Read the full content of a note from the Obsidian vault.
 
@@ -52,6 +81,7 @@ async def read_note(path: str) -> str:
 
 
 @mcp.tool()
+@_tool_error_handler
 async def write_note(path: str, content: str) -> str:
     """Create or update a note in the Obsidian vault.
 
@@ -65,6 +95,7 @@ async def write_note(path: str, content: str) -> str:
 
 
 @mcp.tool()
+@_tool_error_handler
 async def search_notes(
     query: str, folder: str | None = None, limit: int = 20
 ) -> str:
@@ -88,6 +119,7 @@ async def search_notes(
 
 
 @mcp.tool()
+@_tool_error_handler
 async def append_note(path: str, content: str) -> str:
     """Append content to an existing note in the Obsidian vault.
 
@@ -101,6 +133,7 @@ async def append_note(path: str, content: str) -> str:
 
 
 @mcp.tool()
+@_tool_error_handler
 async def delete_note(path: str) -> str:
     """Delete a note and its chunks from the Obsidian vault.
 
@@ -113,6 +146,7 @@ async def delete_note(path: str) -> str:
 
 
 @mcp.tool()
+@_tool_error_handler
 async def read_frontmatter(path: str) -> str:
     """Read frontmatter properties from a note.
 
@@ -128,14 +162,17 @@ async def read_frontmatter(path: str) -> str:
 
 
 @mcp.tool()
+@_tool_error_handler
 async def update_frontmatter(path: str, properties_json: str) -> str:
     """Update or set frontmatter properties on a note.
 
     Args:
         path: Vault path to the note
-        properties_json: JSON string of properties to set (e.g. '{"status": "done", "tags": ["project", "active"]}')
+        properties_json: JSON string of properties to set
+            (e.g. '{"status": "done", "tags": ["project", "active"]}')
     """
     import json
+
     try:
         properties = json.loads(properties_json)
     except json.JSONDecodeError as e:
@@ -148,6 +185,7 @@ async def update_frontmatter(path: str, properties_json: str) -> str:
 
 
 @mcp.tool()
+@_tool_error_handler
 async def list_tags(folder: str | None = None) -> str:
     """List all tags in the vault with occurrence counts.
 
@@ -163,6 +201,7 @@ async def list_tags(folder: str | None = None) -> str:
 
 
 @mcp.tool()
+@_tool_error_handler
 async def search_by_tag(
     tag: str, folder: str | None = None, limit: int = 20
 ) -> str:
@@ -182,6 +221,7 @@ async def search_by_tag(
 
 
 @mcp.tool()
+@_tool_error_handler
 async def get_backlinks(path: str) -> str:
     """Find notes that link to this note via wikilinks.
 
@@ -200,6 +240,7 @@ async def get_backlinks(path: str) -> str:
 
 
 @mcp.tool()
+@_tool_error_handler
 async def get_outbound_links(path: str) -> str:
     """List wikilinks from a note (outbound links).
 
@@ -215,6 +256,7 @@ async def get_outbound_links(path: str) -> str:
 
 
 @mcp.tool()
+@_tool_error_handler
 async def list_folders() -> str:
     """List all folders in the Obsidian vault with note counts."""
     client = _get_client()

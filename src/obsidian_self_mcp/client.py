@@ -1,8 +1,8 @@
 """Async CouchDB client for Obsidian vault operations."""
 
 import base64
+import logging
 import time
-import urllib.parse
 from collections import defaultdict
 
 import httpx
@@ -18,6 +18,8 @@ from .utils import (
     normalize_doc_id,
     set_frontmatter,
 )
+
+logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 10000  # ~10KB chunks for binary
 BINARY_EXTENSIONS = {
@@ -58,12 +60,16 @@ class ObsidianVaultClient:
         resp = await client.get(f"/{encode_doc_id(doc_id)}")
         if resp.status_code == 200:
             return resp.json()
+        if resp.status_code != 404:
+            resp.raise_for_status()
 
         # Try alternate convention (with/without leading slash)
         alt_id = "/" + doc_id if not doc_id.startswith("/") else doc_id[1:]
         resp = await client.get(f"/{encode_doc_id(alt_id)}")
         if resp.status_code == 200:
             return resp.json()
+        if resp.status_code != 404:
+            resp.raise_for_status()
 
         return None
 
@@ -160,9 +166,13 @@ class ObsidianVaultClient:
         chunk_ids = doc.get("children", [])
         chunks = await self._fetch_chunks(chunk_ids)
 
-        # Reassemble in order
-        content_parts = [chunks.get(cid, "") for cid in chunk_ids]
-        content = "".join(content_parts)
+        # Reassemble in order — fail loudly if chunks are missing
+        missing = [cid for cid in chunk_ids if cid not in chunks]
+        if missing:
+            raise ValueError(
+                f"Missing {len(missing)} chunk(s) for {path}: {missing[:3]}"
+            )
+        content = "".join(chunks[cid] for cid in chunk_ids)
 
         is_binary = doc.get("type") == "newnote"
 
@@ -253,6 +263,8 @@ class ObsidianVaultClient:
                     fresh["type"] = doc_type
                     fresh_id = encode_doc_id(fresh["_id"])
                     resp = await client.put(f"/{fresh_id}", json=fresh)
+                else:
+                    raise ValueError(f"Note was deleted during write: {vault_path}")
             resp.raise_for_status()
         else:
             new_doc = {
@@ -287,7 +299,9 @@ class ObsidianVaultClient:
 
         # Get last chunk and append
         last_chunk_id = children[-1]
-        last_data = chunks.get(last_chunk_id, "")
+        if last_chunk_id not in chunks:
+            raise ValueError(f"Last chunk missing for {path}: {last_chunk_id}")
+        last_data = chunks[last_chunk_id]
         new_data = last_data + content
 
         # Create new chunk with appended content
@@ -315,12 +329,18 @@ class ObsidianVaultClient:
         resp = await client.put(f"/{doc_encoded}", json=doc)
         if resp.status_code == 409:
             fresh = await self._get_doc(path)
-            if fresh:
-                fresh["children"][-1] = new_chunk_id
-                fresh["mtime"] = int(time.time() * 1000)
-                fresh["size"] = total_size
-                fresh_id = encode_doc_id(fresh["_id"])
-                resp = await client.put(f"/{fresh_id}", json=fresh)
+            if not fresh:
+                raise ValueError(f"Note was deleted during append: {path}")
+            fresh_children = fresh.get("children", [])
+            if not fresh_children or fresh_children[-1] != last_chunk_id:
+                raise ValueError(
+                    f"Conflict: note {path} was modified concurrently. Please retry."
+                )
+            fresh["children"][-1] = new_chunk_id
+            fresh["mtime"] = int(time.time() * 1000)
+            fresh["size"] = total_size
+            fresh_id = encode_doc_id(fresh["_id"])
+            resp = await client.put(f"/{fresh_id}", json=fresh)
         resp.raise_for_status()
         return True
 
@@ -334,15 +354,24 @@ class ObsidianVaultClient:
 
         # Delete chunks first
         chunk_ids = doc.get("children", [])
+        failed_chunks = []
         for chunk_id in chunk_ids:
-            # Get chunk rev
             resp = await client.get(f"/{encode_doc_id(chunk_id)}")
             if resp.status_code == 200:
                 chunk_rev = resp.json().get("_rev")
-                await client.delete(
+                del_resp = await client.delete(
                     f"/{encode_doc_id(chunk_id)}",
                     params={"rev": chunk_rev},
                 )
+                if del_resp.status_code not in (200, 202):
+                    failed_chunks.append(chunk_id)
+            elif resp.status_code != 404:
+                failed_chunks.append(chunk_id)
+        if failed_chunks:
+            logger.warning(
+                "Failed to delete %d chunk(s) for %s: %s",
+                len(failed_chunks), path, failed_chunks[:5],
+            )
 
         # Delete the doc
         doc_rev = doc.get("_rev")
@@ -355,6 +384,8 @@ class ObsidianVaultClient:
                 resp = await client.delete(
                     f"/{fresh_id}", params={"rev": fresh["_rev"]}
                 )
+            else:
+                return True  # Already deleted by another client
         resp.raise_for_status()
         return True
 
@@ -457,7 +488,12 @@ class ObsidianVaultClient:
         if not chunk_ids:
             return None
         chunks = await self._fetch_chunks(chunk_ids)
-        return "".join(chunks.get(cid, "") for cid in chunk_ids)
+        missing = [cid for cid in chunk_ids if cid not in chunks]
+        if missing:
+            doc_id = doc.get("_id", "unknown")
+            logger.warning("Missing %d chunk(s) for %s: %s", len(missing), doc_id, missing[:3])
+            return None
+        return "".join(chunks[cid] for cid in chunk_ids)
 
     async def list_tags(self, folder: str | None = None) -> dict[str, int]:
         """Scan all notes and return tag -> count mapping."""
@@ -546,7 +582,7 @@ class ObsidianVaultClient:
                 continue
 
             links = extract_wikilinks(content)
-            link_names_lower = [l.rsplit("/", 1)[-1].lower() for l in links]
+            link_names_lower = [lnk.rsplit("/", 1)[-1].lower() for lnk in links]
 
             if target_lower in link_names_lower:
                 # Extract context snippet around the link

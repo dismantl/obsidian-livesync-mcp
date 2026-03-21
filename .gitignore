@@ -4,6 +4,8 @@ __pycache__/
 dist/
 build/
 .eggs/
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/agents/
 .env
 .env.*

@@ -36,8 +36,12 @@ async def _cmd_read(client: ObsidianVaultClient, args):
 
 async def _cmd_write(client: ObsidianVaultClient, args):
     if args.file:
-        with open(args.file) as f:
-            content = f.read()
+        try:
+            with open(args.file) as f:
+                content = f.read()
+        except (FileNotFoundError, PermissionError, IsADirectoryError) as e:
+            print(f"Error reading file: {e}", file=sys.stderr)
+            sys.exit(1)
     elif args.content:
         content = args.content
     else:
@@ -61,8 +65,12 @@ async def _cmd_search(client: ObsidianVaultClient, args):
 
 async def _cmd_append(client: ObsidianVaultClient, args):
     if args.file:
-        with open(args.file) as f:
-            content = f.read()
+        try:
+            with open(args.file) as f:
+                content = f.read()
+        except (FileNotFoundError, PermissionError, IsADirectoryError) as e:
+            print(f"Error reading file: {e}", file=sys.stderr)
+            sys.exit(1)
     elif args.content:
         content = args.content
     else:
@@ -244,6 +252,12 @@ def main():
     async def run():
         try:
             await handler(client, args)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
+            sys.exit(1)
         finally:
             await client.close()
 

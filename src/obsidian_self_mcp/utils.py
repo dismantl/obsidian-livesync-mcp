@@ -104,6 +104,8 @@ def extract_tags(content: str) -> list[str]:
             fm_tags = [t.strip() for t in fm_tags.split(",")]
         if isinstance(fm_tags, list):
             for t in fm_tags:
+                if not isinstance(t, (str, int)):
+                    continue
                 tag = str(t).strip().lstrip("#")
                 if tag and tag not in seen:
                     seen.add(tag)
