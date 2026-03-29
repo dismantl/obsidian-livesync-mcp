@@ -766,3 +766,124 @@ async def test_get_backlinks_skips_binary(client):
 
     backlinks = await client.get_backlinks("Notes/Todo.md")
     assert backlinks == []
+
+
+# ── legacy notes type ────────────────────────────────────────────
+
+
+@respx.mock
+async def test_read_note_legacy_notes_type_string(client):
+    """Legacy 'notes' type stores content directly in data field as a string."""
+    doc = {
+        "_id": "notes/old.md",
+        "_rev": "1-abc",
+        "data": "Legacy content here",
+        "type": "notes",
+        "ctime": 1700000000000,
+        "mtime": 1700000000000,
+        "size": 19,
+        "path": "Notes/old.md",
+    }
+    _mock_get_doc("notes%2Fold.md", doc)
+
+    result = await client.read_note("Notes/old.md")
+    assert result is not None
+    assert result.content == "Legacy content here"
+    assert result.is_binary is False
+
+
+@respx.mock
+async def test_read_note_legacy_notes_type_list(client):
+    """Legacy 'notes' type can store content as a list of strings."""
+    doc = {
+        "_id": "notes/old.md",
+        "_rev": "1-abc",
+        "data": ["Part one. ", "Part two."],
+        "type": "notes",
+        "ctime": 1700000000000,
+        "mtime": 1700000000000,
+        "size": 19,
+        "path": "Notes/old.md",
+    }
+    _mock_get_doc("notes%2Fold.md", doc)
+
+    result = await client.read_note("Notes/old.md")
+    assert result is not None
+    assert result.content == "Part one. Part two."
+
+
+@respx.mock
+async def test_list_notes_includes_legacy_type(client):
+    """list_notes should include legacy 'notes' type documents."""
+    docs = [
+        _make_parent_doc("notes/a.md", ["h:c1"], path="Notes/a.md"),
+        {
+            "_id": "notes/old.md",
+            "_rev": "1-abc",
+            "data": "old content",
+            "type": "notes",
+            "ctime": 1700000000000,
+            "mtime": 1700000000000,
+            "size": 11,
+            "path": "Notes/old.md",
+        },
+    ]
+    _mock_get_all_file_docs(docs)
+
+    results = await client.list_notes()
+    assert len(results) == 2
+
+
+# ── orphan chunk cleanup ─────────────────────────────────────────
+
+
+@respx.mock
+async def test_write_note_cleans_up_orphan_chunks(client):
+    """Updating a note should delete old chunks no longer referenced."""
+    existing = _make_parent_doc("notes/todo.md", ["h:oldchunk0000"])
+    _mock_get_doc("notes%2Ftodo.md", existing)
+
+    # New chunk creation
+    respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
+        return_value=Response(201, json={"ok": True, "rev": "1-new"})
+    )
+    # Parent doc update
+    respx.put(f"{BASE}/notes%2Ftodo.md").mock(
+        return_value=Response(200, json={"ok": True, "rev": "2-updated"})
+    )
+    # Old chunk GET for rev (needed for delete)
+    respx.get(f"{BASE}/h%3Aoldchunk0000").mock(
+        return_value=Response(200, json={"_id": "h:oldchunk0000", "_rev": "1-old"})
+    )
+    # Old chunk DELETE
+    delete_route = respx.delete(f"{BASE}/h%3Aoldchunk0000").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+
+    result = await client.write_note("Notes/todo.md", "Updated content")
+    assert result is True
+    assert delete_route.called
+
+
+@respx.mock
+async def test_write_note_orphan_cleanup_failure_nonfatal(client):
+    """Failed chunk cleanup should log warning, not fail the write."""
+    existing = _make_parent_doc("notes/todo.md", ["h:oldchunk0000"])
+    _mock_get_doc("notes%2Ftodo.md", existing)
+
+    # New chunk creation
+    respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
+        return_value=Response(201, json={"ok": True, "rev": "1-new"})
+    )
+    # Parent doc update
+    respx.put(f"{BASE}/notes%2Ftodo.md").mock(
+        return_value=Response(200, json={"ok": True, "rev": "2-updated"})
+    )
+    # Old chunk GET returns 500 (cleanup fails)
+    respx.get(f"{BASE}/h%3Aoldchunk0000").mock(
+        return_value=Response(500, json={"error": "internal"})
+    )
+
+    # Write should still succeed
+    result = await client.write_note("Notes/todo.md", "Updated content")
+    assert result is True

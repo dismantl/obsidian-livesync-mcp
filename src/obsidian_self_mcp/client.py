@@ -1,12 +1,12 @@
 """Async CouchDB client for Obsidian vault operations."""
 
-import base64
 import logging
 import time
 from collections import defaultdict
 
 import httpx
 
+from .chunking import split_chunks
 from .config import Config
 from .models import BacklinkInfo, FolderInfo, NoteContent, NoteMetadata, SearchResult
 from .utils import (
@@ -20,8 +20,6 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-CHUNK_SIZE = 10000  # ~10KB chunks for binary
 BINARY_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf",
     ".mp3", ".mp4", ".wav", ".zip", ".tar", ".gz",
@@ -91,6 +89,27 @@ class ObsidianVaultClient:
                 result[row["id"]] = doc["data"]
         return result
 
+    async def _delete_orphan_chunks(self, chunk_ids: list[str]) -> None:
+        """Delete orphaned chunk documents. Best-effort: logs warnings on failure."""
+        client = await self._get_client()
+        for chunk_id in chunk_ids:
+            try:
+                resp = await client.get(f"/{encode_doc_id(chunk_id)}")
+                if resp.status_code == 200:
+                    chunk_rev = resp.json().get("_rev")
+                    del_resp = await client.delete(
+                        f"/{encode_doc_id(chunk_id)}",
+                        params={"rev": chunk_rev},
+                    )
+                    if del_resp.status_code not in (200, 202):
+                        logger.warning("Failed to delete orphan chunk %s", chunk_id)
+                elif resp.status_code != 404:
+                    logger.warning(
+                        "Failed to fetch orphan chunk %s: %s", chunk_id, resp.status_code
+                    )
+            except Exception:
+                logger.warning("Error cleaning up orphan chunk %s", chunk_id, exc_info=True)
+
     async def _get_all_file_docs(self) -> list[dict]:
         """Fetch all file docs (skip chunks, design docs, index docs)."""
         client = await self._get_client()
@@ -108,7 +127,9 @@ class ObsidianVaultClient:
         resp.raise_for_status()
         for row in resp.json().get("rows", []):
             doc = row.get("doc", {})
-            if doc.get("type") in ("plain", "newnote") and "children" in doc:
+            if doc.get("type") in ("plain", "newnote", "notes") and (
+                "children" in doc or "data" in doc
+            ):
                 docs.append(doc)
 
         # Range 2: docs after "h:~" (after all chunks)
@@ -122,7 +143,9 @@ class ObsidianVaultClient:
         resp.raise_for_status()
         for row in resp.json().get("rows", []):
             doc = row.get("doc", {})
-            if doc.get("type") in ("plain", "newnote") and "children" in doc:
+            if doc.get("type") in ("plain", "newnote", "notes") and (
+                "children" in doc or "data" in doc
+            ):
                 docs.append(doc)
 
         return docs
@@ -167,18 +190,23 @@ class ObsidianVaultClient:
         if not doc:
             return None
 
-        chunk_ids = doc.get("children", [])
-        chunks = await self._fetch_chunks(chunk_ids)
-
-        # Reassemble in order — fail loudly if chunks are missing
-        missing = [cid for cid in chunk_ids if cid not in chunks]
-        if missing:
-            raise ValueError(
-                f"Missing {len(missing)} chunk(s) for {path}: {missing[:3]}"
-            )
-        content = "".join(chunks[cid] for cid in chunk_ids)
-
         is_binary = doc.get("type") == "newnote"
+
+        # Legacy "notes" type stores content directly in data field
+        if doc.get("type") == "notes":
+            data = doc.get("data", "")
+            content = "".join(data) if isinstance(data, list) else str(data)
+        else:
+            chunk_ids = doc.get("children", [])
+            chunks = await self._fetch_chunks(chunk_ids)
+
+            # Reassemble in order — fail loudly if chunks are missing
+            missing = [cid for cid in chunk_ids if cid not in chunks]
+            if missing:
+                raise ValueError(
+                    f"Missing {len(missing)} chunk(s) for {path}: {missing[:3]}"
+                )
+            content = "".join(chunks[cid] for cid in chunk_ids)
 
         return NoteContent(
             path=doc.get("path", path),
@@ -218,36 +246,35 @@ class ObsidianVaultClient:
         doc_id = normalize_doc_id(vault_path)
         encoded_id = encode_doc_id(doc_id)
 
-        # Prepare chunks
+        # Prepare chunks using Rabin-Karp content-defined splitting
         if is_binary:
             raw = content.encode("utf-8") if isinstance(content, str) else content
-            encoded_content = base64.b64encode(raw).decode("ascii")
-            chunks_data = [
-                encoded_content[i : i + CHUNK_SIZE]
-                for i in range(0, len(encoded_content), CHUNK_SIZE)
-            ]
             file_size = len(raw)
             doc_type = "newnote"
+            chunks_data = split_chunks(raw, is_text=False)
         else:
-            chunks_data = [content]
             file_size = len(content.encode("utf-8"))
             doc_type = "plain"
+            chunks_data = split_chunks(content.encode("utf-8"), is_text=True)
 
-        # Create chunk docs
+        # Create chunk docs with content-hash IDs
         chunk_ids = []
         for chunk_data in chunks_data:
-            chunk_id = generate_chunk_id()
+            chunk_id = generate_chunk_id(chunk_data)
             resp = await client.put(
                 f"/{encode_doc_id(chunk_id)}",
                 json={"_id": chunk_id, "data": chunk_data, "type": "leaf"},
             )
-            resp.raise_for_status()
+            # 409 is OK — chunk with same content hash already exists
+            if resp.status_code != 409:
+                resp.raise_for_status()
             chunk_ids.append(chunk_id)
 
         now_ms = int(time.time() * 1000)
 
         # Check existing doc
         existing = await self._get_doc(vault_path)
+        old_children = set(existing.get("children", [])) if existing else set()
 
         if existing:
             existing["children"] = chunk_ids
@@ -284,6 +311,12 @@ class ObsidianVaultClient:
             resp = await client.put(f"/{encoded_id}", json=new_doc)
             resp.raise_for_status()
 
+        # Clean up orphaned chunks (best-effort)
+        new_children = set(chunk_ids)
+        orphaned = old_children - new_children
+        if orphaned:
+            await self._delete_orphan_chunks(list(orphaned))
+
         return True
 
     async def append_note(self, path: str, content: str) -> bool:
@@ -309,7 +342,7 @@ class ObsidianVaultClient:
         new_data = last_data + content
 
         # Create new chunk with appended content
-        new_chunk_id = generate_chunk_id()
+        new_chunk_id = generate_chunk_id(new_data)
         resp = await client.put(
             f"/{encode_doc_id(new_chunk_id)}",
             json={"_id": new_chunk_id, "data": new_data, "type": "leaf"},
