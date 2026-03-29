@@ -195,6 +195,39 @@ LiveSync splits each note into a parent document (metadata + ordered list of chu
 
 Document IDs are lowercased vault paths. Paths starting with `_` (like `_Changelog/`) get a `/` prefix since CouchDB reserves `_`-prefixed IDs.
 
+## LiveSync Compatibility
+
+This tool talks directly to CouchDB and must match LiveSync's document format. The following LiveSync settings are **required** for compatibility:
+
+| Setting | Required Value | Default | Notes |
+|---------|---------------|---------|-------|
+| `encrypt` | `false` | `true` | E2EE not supported — all data would be unreadable |
+| `usePathObfuscation` | `false` | `true` | Obfuscated doc IDs not supported |
+| `enableCompression` | `false` | `false` | DEFLATE compressed chunks not supported |
+| `handleFilenameCaseSensitive` | `false` | `false` | Doc IDs are always lowercased |
+
+> **Important:** LiveSync defaults to E2EE enabled with path obfuscation. Disable both when setting up your vault for use with this tool.
+
+### Compatible Settings
+
+These settings can be any value — reads always work, writes use LiveSync defaults:
+
+| Setting | Our Behavior |
+|---------|-------------|
+| `hashAlg` | Writes use `xxhash64` (LiveSync default). Reads work with any hash algorithm. |
+| `chunkSplitterVersion` | Writes use `v3-rabin-karp` (LiveSync default). Reads work with any splitter. |
+| `customChunkSize` | Writes use `0` (default). Reads work with any chunk size. |
+| `useEden` | Deprecated. Ignored on read, writes set `eden: {}`. |
+
+### Unsupported Features
+
+| Feature | Impact |
+|---------|--------|
+| End-to-end encryption (E2EE) | All note content is unreadable |
+| Path obfuscation | Cannot locate any documents |
+| Data compression (`enableCompression`) | Chunk data appears garbled |
+| Chunk packs (`chunkpack` type) | Packed chunks are not fetched |
+
 ## License
 
 MIT
