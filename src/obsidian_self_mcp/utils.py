@@ -1,18 +1,38 @@
 """Utility functions for chunk ID generation, path normalization, and content parsing."""
 
-import random
 import re
-import string
 import urllib.parse
 
+import xxhash
 import yaml
 
-_CHUNK_CHARS = string.ascii_lowercase + string.digits
+
+def _int_to_base36(n: int) -> str:
+    """Convert a non-negative integer to a base-36 string (matching JS BigInt.toString(36))."""
+    if n == 0:
+        return "0"
+    chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+    result = []
+    while n > 0:
+        result.append(chars[n % 36])
+        n //= 36
+    return "".join(reversed(result))
 
 
-def generate_chunk_id() -> str:
-    """Generate a random chunk ID matching LiveSync format: h: + 12 alnum."""
-    return "h:" + "".join(random.choice(_CHUNK_CHARS) for _ in range(12))
+def _utf16_len(s: str) -> int:
+    """Count UTF-16 code units (matching JavaScript's string.length)."""
+    return len(s.encode("utf-16-le")) // 2
+
+
+def generate_chunk_id(content: str) -> str:
+    """Generate a chunk ID by hashing content, matching LiveSync's xxhash64 format.
+
+    LiveSync computes: h: + xxhash64(piece + "-" + piece.length).toString(36)
+    where piece.length is JavaScript's UTF-16 code unit count.
+    """
+    hash_input = f"{content}-{_utf16_len(content)}"
+    hash_value = xxhash.xxh64(hash_input.encode("utf-8")).intdigest()
+    return f"h:{_int_to_base36(hash_value)}"
 
 
 def normalize_doc_id(vault_path: str) -> str:

@@ -1,7 +1,5 @@
 """Tests for obsidian_self_mcp.utils — pure function tests."""
 
-import re
-
 from obsidian_self_mcp.utils import (
     encode_doc_id,
     extract_frontmatter,
@@ -15,21 +13,39 @@ from obsidian_self_mcp.utils import (
 # ── generate_chunk_id ─────────────────────────────────────────────
 
 
-def test_generate_chunk_id_format():
-    cid = generate_chunk_id()
+def test_generate_chunk_id_deterministic():
+    """Same content always produces the same chunk ID."""
+    id1 = generate_chunk_id("Hello world")
+    id2 = generate_chunk_id("Hello world")
+    assert id1 == id2
+
+
+def test_generate_chunk_id_prefix():
+    """Chunk IDs start with h: prefix."""
+    cid = generate_chunk_id("test content")
     assert cid.startswith("h:")
-    assert len(cid) == 14  # "h:" + 12 chars
 
 
-def test_generate_chunk_id_chars():
-    cid = generate_chunk_id()
+def test_generate_chunk_id_different_content():
+    """Different content produces different chunk IDs."""
+    id1 = generate_chunk_id("content A")
+    id2 = generate_chunk_id("content B")
+    assert id1 != id2
+
+
+def test_generate_chunk_id_base36():
+    """Chunk ID suffix is base-36 (lowercase alphanumeric)."""
+    cid = generate_chunk_id("some content")
     suffix = cid[2:]
-    assert re.fullmatch(r"[a-z0-9]{12}", suffix)
+    assert all(c in "0123456789abcdefghijklmnopqrstuvwxyz" for c in suffix)
 
 
-def test_generate_chunk_id_unique():
-    ids = {generate_chunk_id() for _ in range(100)}
-    assert len(ids) == 100
+def test_generate_chunk_id_utf16_len():
+    """Emoji content uses UTF-16 code unit count (matching JavaScript string.length)."""
+    # "👋" is 1 Python char but 2 UTF-16 code units
+    id_emoji = generate_chunk_id("👋")
+    # Hash input should be "👋-2" (UTF-16 length), not "👋-1" (Python len)
+    assert id_emoji.startswith("h:")
 
 
 # ── normalize_doc_id ──────────────────────────────────────────────
