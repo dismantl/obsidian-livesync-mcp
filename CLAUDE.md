@@ -36,6 +36,7 @@ pytest -k test_normalize      # run tests matching a name
 
 - **ASGI functional tests** — `test_server.py::TestStreamableHttpASGI` uses Starlette `TestClient` to hit the real MCP app in-process (no subprocess/port). Uses `host='0.0.0.0'` to avoid DNS rebinding protection.
 - **Module-level config** — server config is evaluated at import time. Tests that change transport mode must `importlib.reload()` the server module with patched env vars (see `_reload_server_module` helper).
+- **OAuth tests** — use `respx` to mock OIDC/CouchDB HTTP calls and `AsyncMock(spec=OAuthStore)` for the store. ID token tests generate real RSA keypairs via `cryptography` and sign JWTs with `pyjwt`. All ID token test claims must include `email_verified: True`.
 
 ## Required Environment Variables
 
@@ -47,6 +48,15 @@ OBSIDIAN_COUCH_DB=obsidian-vault  # optional, defaults to "obsidian-vault"
 ```
 
 Fallback names also supported: `COUCHDB_URL`, `COUCHDB_USER`, `COUCHDB_PASSWORD`, `COUCHDB_DB`.
+
+### OAuth Environment Variables (all required when `OAUTH_ISSUER_URL` is set)
+
+```bash
+OAUTH_ISSUER_URL=https://your-oidc-provider.example.com
+OAUTH_CLIENT_ID=your-client-id
+OAUTH_CLIENT_SECRET=your-client-secret
+OAUTH_AUTHORIZED_EMAIL=you@example.com
+```
 
 ## Architecture
 
@@ -64,6 +74,17 @@ Supporting modules:
 - **`config.py`** — Frozen dataclass reading env vars at startup.
 - **`models.py`** — Data classes (`NoteMetadata`, `NoteContent`, `SearchResult`, `BacklinkInfo`, `FolderInfo`).
 - **`utils.py`** — Path normalization, chunk ID generation, frontmatter/YAML parsing, wikilink and tag extraction.
+
+### OAuth Subsystem (optional)
+
+Enabled when `OAUTH_ISSUER_URL` is set. Adds OAuth 2.1 authorization server delegating to an upstream OIDC provider:
+
+- **`oauth_provider.py`** — `OIDCDelegatingProvider` implements MCP SDK's `OAuthAuthorizationServerProvider`. Takes `resource_url` as constructor param. Uses `EphemeralStore` for short-lived auth codes/state.
+- **`oauth_store.py`** — `OAuthStore` persists clients, access tokens, and refresh tokens in a separate `mcp_oauth` CouchDB database. Owns cascading revocation via `delete_paired_tokens()`.
+- **`oauth_callback.py`** — Starlette route handler for OIDC redirect. Validates ID token (signature, issuer, audience, `email_verified`), checks authorized email, issues MCP auth code.
+- **`config.py`** — When `oauth_issuer_url` is set, `oauth_client_id`, `oauth_client_secret`, and `oauth_authorized_email` are all required.
+- OAuth initialization is **deferred** — `asyncio.run(_initialize_oauth())` happens in `main()`, not at import time. This preserves `importlib.reload()` compatibility in tests.
+- `pyjwt[crypto]` is an optional dependency (`[oauth]` extra). Dev deps include it via `[dev]`.
 
 ## LiveSync Document Model
 

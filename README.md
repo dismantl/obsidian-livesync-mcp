@@ -44,7 +44,8 @@ Obsidian has an [official CLI](https://obsidian.md/blog/introducing-obsidian-cli
 ## Installation
 
 ```bash
-pip install obsidian-self-mcp
+pip install obsidian-self-mcp            # core (stdio + HTTP transport)
+pip install obsidian-self-mcp[oauth]     # with OAuth/OIDC support
 ```
 
 Or install from source:
@@ -52,8 +53,9 @@ Or install from source:
 ```bash
 git clone https://github.com/dismantl/obsidian-self-mcp.git
 cd obsidian-self-mcp
-pip install -e .          # runtime only
-pip install -e ".[dev]"   # with ruff, pytest, respx
+pip install -e .            # runtime only
+pip install -e ".[oauth]"   # with OAuth/OIDC support (pyjwt + cryptography)
+pip install -e ".[dev]"     # with dev tools (ruff, pytest, respx) + OAuth deps
 ```
 
 ## Configuration
@@ -107,7 +109,52 @@ export MCP_API_KEY="your-secret-key"  # optional, enables Bearer token auth
 python -m obsidian_self_mcp.server
 ```
 
-When `MCP_API_KEY` is set, clients must include `Authorization: Bearer your-secret-key` in requests. You can also set `MCP_RESOURCE_URL` to override the OAuth resource server URL (defaults to `http://localhost:{MCP_PORT}`).
+When `MCP_API_KEY` is set, clients must include `Authorization: Bearer your-secret-key` in requests. You can also set `MCP_RESOURCE_URL` to the server's public URL (defaults to `http://localhost:{MCP_PORT}`).
+
+### OAuth Authentication (for claude.ai and other remote MCP clients)
+
+For MCP clients that require OAuth (like claude.ai), the server can act as a full OAuth 2.1 authorization server that delegates user authentication to any OIDC provider (Authelia, Keycloak, Auth0, etc.):
+
+```bash
+export OBSIDIAN_COUCH_URL="http://your-couchdb-host:5984"
+export OBSIDIAN_COUCH_USER="your-username"
+export OBSIDIAN_COUCH_PASS="your-password"
+export MCP_TRANSPORT="streamable-http"
+export MCP_RESOURCE_URL="https://your-mcp-server.example.com"  # public URL
+
+# OIDC provider configuration
+export OAUTH_ISSUER_URL="https://your-oidc-provider.example.com"
+export OAUTH_CLIENT_ID="your-client-id"         # registered with the OIDC provider
+export OAUTH_CLIENT_SECRET="your-client-secret"  # registered with the OIDC provider
+export OAUTH_AUTHORIZED_EMAIL="you@example.com"  # required: only this email can access
+
+python -m obsidian_self_mcp.server
+```
+
+**How it works:**
+
+1. The MCP client (e.g., claude.ai) discovers OAuth endpoints via `/.well-known/oauth-authorization-server`
+2. It dynamically registers as a client and initiates the authorization code flow with PKCE
+3. You authenticate once via your OIDC provider's login page in a browser
+4. The MCP client receives tokens and uses them for all subsequent requests
+
+**Setup requirements:**
+
+- Install with OAuth support: `pip install obsidian-self-mcp[oauth]`
+- Register the MCP server as a client with your OIDC provider
+- Set the redirect URI to `{MCP_RESOURCE_URL}/oauth/callback` (e.g., `https://your-mcp-server.example.com/oauth/callback`)
+- The OIDC provider must include the `email` and `email_verified` claims in ID tokens
+
+**OAuth and API key can coexist:** If both `OAUTH_ISSUER_URL` and `MCP_API_KEY` are set, OAuth is the primary auth method and the static API key works as a fallback. This lets claude.ai use OAuth while Claude Code continues using the API key.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OAUTH_ISSUER_URL` | For OAuth | OIDC provider's issuer URL (triggers OAuth mode) |
+| `OAUTH_CLIENT_ID` | For OAuth | Client ID registered with the OIDC provider |
+| `OAUTH_CLIENT_SECRET` | For OAuth | Client secret for the OIDC provider |
+| `OAUTH_AUTHORIZED_EMAIL` | For OAuth | Email address authorized to access the vault |
+| `MCP_API_KEY` | No | Static Bearer token (works alongside or instead of OAuth) |
+| `MCP_RESOURCE_URL` | For OAuth | Public URL of the MCP server |
 
 ### Docker
 

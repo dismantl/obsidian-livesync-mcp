@@ -1,5 +1,6 @@
 """FastMCP server exposing Obsidian vault tools via stdio or streamable-http transport."""
 
+import asyncio
 import functools
 import logging
 import os
@@ -14,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 _transport = os.environ.get("MCP_TRANSPORT", "stdio")
 _server_kwargs: dict = {}
+_oauth_provider = None
+_oauth_store = None
 
 if _transport == "streamable-http":
     _server_kwargs["host"] = os.environ.get("MCP_HOST", "0.0.0.0")
@@ -22,7 +25,44 @@ if _transport == "streamable-http":
     _server_kwargs["json_response"] = True
 
     _api_key = os.environ.get("MCP_API_KEY", "")
-    if _api_key:
+    _port = int(os.environ.get("MCP_PORT", "8080"))
+    _resource_url = os.environ.get("MCP_RESOURCE_URL", f"http://localhost:{_port}")
+
+    if os.environ.get("OAUTH_ISSUER_URL"):
+        _config = Config()
+        # OAuth mode: full OAuthAuthorizationServerProvider with OIDC delegation
+        from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
+        from pydantic import AnyHttpUrl
+
+        from .oauth_provider import OIDCDelegatingProvider
+        from .oauth_store import OAuthStore
+
+        _oauth_store = OAuthStore(
+            couch_url=_config.couch_url,
+            couch_user=_config.couch_user,
+            couch_pass=_config.couch_pass,
+        )
+        _http_client = httpx.AsyncClient(timeout=30.0)
+        _oauth_provider = OIDCDelegatingProvider(
+            config=_config,
+            store=_oauth_store,
+            http_client=_http_client,
+            resource_url=_resource_url,
+            api_key=_api_key or None,
+        )
+
+        _server_kwargs["auth_server_provider"] = _oauth_provider
+        _server_kwargs["auth"] = AuthSettings(
+            issuer_url=AnyHttpUrl(_resource_url),
+            resource_server_url=AnyHttpUrl(_resource_url),
+            required_scopes=[],
+            client_registration_options=ClientRegistrationOptions(enabled=True),
+        )
+
+        logger.info("OAuth mode enabled (OIDC issuer: %s)", _config.oauth_issuer_url)
+
+    elif _api_key:
+        # Static API key mode (existing behavior)
         from mcp.server.auth.provider import AccessToken, TokenVerifier
         from mcp.server.auth.settings import AuthSettings
         from pydantic import AnyHttpUrl
@@ -35,8 +75,6 @@ if _transport == "streamable-http":
                     return None
                 return AccessToken(token=token, client_id="api-key", scopes=[], expires_at=None)
 
-        _port = int(os.environ.get("MCP_PORT", "8080"))
-        _resource_url = os.environ.get("MCP_RESOURCE_URL", f"http://localhost:{_port}")
         _server_kwargs["token_verifier"] = _APIKeyVerifier()
         _server_kwargs["auth"] = AuthSettings(
             issuer_url=AnyHttpUrl(_resource_url),
@@ -45,6 +83,21 @@ if _transport == "streamable-http":
         )
 
 mcp = FastMCP("obsidian-self-mcp", **_server_kwargs)
+
+# Mount OAuth callback route when in OAuth mode
+if _oauth_provider is not None:
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    from .oauth_callback import handle_oauth_callback
+
+    _provider_ref = _oauth_provider
+
+    @mcp.custom_route("/oauth/callback", methods=["GET"])
+    async def oauth_callback(request: Request) -> Response:
+        return await handle_oauth_callback(request, _provider_ref)
+
+
 _client: ObsidianVaultClient | None = None
 
 
@@ -294,11 +347,27 @@ async def list_folders() -> str:
     return f"Found {len(folders)} folders:\n" + "\n".join(lines)
 
 
+async def _initialize_oauth() -> None:
+    """Initialize OAuth store and provider. Called once at server startup."""
+    if _oauth_store is not None and _oauth_provider is not None:
+        await _oauth_store.ensure_db()
+        await _oauth_provider.initialize()
+        _oauth_store.start_purge_task()
+
+
 def main():
-    if _transport == "streamable-http":
-        mcp.run(transport="streamable-http")
-    else:
-        mcp.run(transport="stdio")
+    # Perform deferred async initialization for OAuth
+    if _oauth_store is not None:
+        asyncio.run(_initialize_oauth())
+
+    try:
+        if _transport == "streamable-http":
+            mcp.run(transport="streamable-http")
+        else:
+            mcp.run(transport="stdio")
+    finally:
+        if _oauth_store is not None:
+            _oauth_store.stop_purge_task()
 
 
 if __name__ == "__main__":
