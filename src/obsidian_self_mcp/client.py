@@ -293,6 +293,7 @@ class ObsidianVaultClient:
             existing["mtime"] = now_ms
             existing["size"] = file_size
             existing["type"] = doc_type
+            existing.pop("deleted", None)
             # Use the existing _id for the PUT
             existing_id = encode_doc_id(existing["_id"])
             resp = await client.put(f"/{existing_id}", json=existing)
@@ -304,6 +305,7 @@ class ObsidianVaultClient:
                     fresh["mtime"] = now_ms
                     fresh["size"] = file_size
                     fresh["type"] = doc_type
+                    fresh.pop("deleted", None)
                     fresh_id = encode_doc_id(fresh["_id"])
                     resp = await client.put(f"/{fresh_id}", json=fresh)
                 else:
