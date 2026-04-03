@@ -51,30 +51,62 @@ def test_generate_chunk_id_utf16_len():
 # ── normalize_doc_id ──────────────────────────────────────────────
 
 
-def test_normalize_doc_id_basic():
-    assert normalize_doc_id("Notes/todo.md") == "Notes/todo.md"
+def test_normalize_doc_id_no_obfuscation():
+    """Without passphrase, returns lowercased path (LiveSync default)."""
+    assert normalize_doc_id("Notes/todo.md") == "notes/todo.md"
 
 
-def test_normalize_doc_id_preserves_case():
-    """Doc IDs must preserve original casing for non-obfuscated LiveSync."""
-    assert normalize_doc_id("3 Resources/digests/2026-04-03.md") == "3 Resources/digests/2026-04-03.md"
+def test_normalize_doc_id_no_obfuscation_preserves_structure():
+    assert normalize_doc_id("3 Resources/digests/2026-04-03.md") == "3 resources/digests/2026-04-03.md"
 
 
-def test_normalize_doc_id_mixed_case():
-    assert normalize_doc_id("Dev Projects/README.md") == "Dev Projects/README.md"
+def test_normalize_doc_id_case_sensitive():
+    """With case_insensitive=False, preserves original casing."""
+    assert normalize_doc_id("Dev Projects/README.md", case_insensitive=False) == "Dev Projects/README.md"
 
 
 def test_normalize_doc_id_underscore_prefix():
     """CouchDB reserves _ prefix — LiveSync prepends /."""
-    assert normalize_doc_id("_Changelog/entry.md") == "/_Changelog/entry.md"
+    assert normalize_doc_id("_Changelog/entry.md") == "/_changelog/entry.md"
 
 
 def test_normalize_doc_id_strips_leading_slash():
-    assert normalize_doc_id("/Notes/todo.md") == "Notes/todo.md"
+    assert normalize_doc_id("/Notes/todo.md") == "notes/todo.md"
 
 
 def test_normalize_doc_id_empty():
     assert normalize_doc_id("") == ""
+
+
+def test_normalize_doc_id_obfuscated():
+    """With passphrase, returns f: + SHA-256 hash matching LiveSync."""
+    # Known pair: passphrase "undefined", path "Clippings/Streamlining task list processing with Claude MCP.md"
+    result = normalize_doc_id(
+        "Clippings/Streamlining task list processing with Claude MCP.md",
+        obfuscate_passphrase="undefined",
+    )
+    assert result == "f:014aa7efb7d39ade841b8d94e46304c18fa78962241f91ef132843bae9149ced"
+
+
+def test_normalize_doc_id_obfuscated_prefix():
+    """Obfuscated IDs always start with f: prefix."""
+    result = normalize_doc_id("Notes/todo.md", obfuscate_passphrase="secret")
+    assert result.startswith("f:")
+    assert len(result) == 2 + 64  # f: + 64 hex chars
+
+
+def test_normalize_doc_id_obfuscated_deterministic():
+    """Same path + passphrase always produces the same ID."""
+    id1 = normalize_doc_id("test.md", obfuscate_passphrase="pass")
+    id2 = normalize_doc_id("test.md", obfuscate_passphrase="pass")
+    assert id1 == id2
+
+
+def test_normalize_doc_id_obfuscated_different_passphrase():
+    """Different passphrases produce different IDs for the same path."""
+    id1 = normalize_doc_id("test.md", obfuscate_passphrase="pass1")
+    id2 = normalize_doc_id("test.md", obfuscate_passphrase="pass2")
+    assert id1 != id2
 
 
 # ── encode_doc_id ─────────────────────────────────────────────────

@@ -19,6 +19,10 @@ class Config:
         or os.environ.get("COUCHDB_DATABASE", "obsidian-vault")
     )
 
+    # LiveSync path obfuscation passphrase (optional — set to match your
+    # LiveSync client's passphrase when usePathObfuscation is enabled)
+    obfuscate_passphrase: str | None = os.environ.get("OBSIDIAN_OBFUSCATE_PASSPHRASE") or None
+
     # OAuth/OIDC configuration (optional — OAuth is opt-in, but all fields
     # are required once OAUTH_ISSUER_URL is set)
     oauth_issuer_url: str | None = os.environ.get("OAUTH_ISSUER_URL") or None

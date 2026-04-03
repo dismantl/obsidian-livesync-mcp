@@ -1,5 +1,6 @@
 """Utility functions for chunk ID generation, path normalization, and content parsing."""
 
+import hashlib
 import re
 import urllib.parse
 
@@ -35,18 +36,40 @@ def generate_chunk_id(content: str) -> str:
     return f"h:{_int_to_base36(hash_value)}"
 
 
-def normalize_doc_id(vault_path: str) -> str:
-    """Convert a vault path to CouchDB doc ID.
+def _hash_string(key: str) -> str:
+    """SHA-256 hash matching LiveSync's hashString() in path.ts."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
-    Preserves original casing to match LiveSync's non-obfuscated ID scheme.
-    CouchDB reserves IDs starting with '_', so paths like '_Changelog/...'
-    get a '/' prefix to match Obsidian LiveSync's convention.
+
+def normalize_doc_id(
+    vault_path: str,
+    obfuscate_passphrase: str | None = None,
+    case_insensitive: bool = True,
+) -> str:
+    """Convert a vault path to CouchDB doc ID, matching LiveSync's path2id_base().
+
+    Args:
+        vault_path: The vault-relative file path.
+        obfuscate_passphrase: If set, generate an ``f:`` prefixed hash ID
+            (LiveSync path obfuscation mode). If None, use the plain path.
+        case_insensitive: Lowercase the path before hashing (LiveSync default).
     """
-    doc_id = vault_path.lstrip("/")
+    filename = vault_path.lstrip("/")
+
+    if case_insensitive:
+        filename = filename.lower()
+
     # CouchDB rejects doc IDs starting with '_' — prefix with '/'
-    if doc_id.startswith("_"):
-        doc_id = "/" + doc_id
-    return doc_id
+    if filename.startswith("_"):
+        filename = "/" + filename
+
+    if not obfuscate_passphrase:
+        return filename
+
+    # Path obfuscation: f: + SHA-256(SHA-256(passphrase) + ":" + filename)
+    hashed_passphrase = _hash_string(obfuscate_passphrase)
+    hashed_id = _hash_string(f"{hashed_passphrase}:{filename}")
+    return f"f:{hashed_id}"
 
 
 def encode_doc_id(doc_id: str) -> str:

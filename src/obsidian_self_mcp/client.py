@@ -60,10 +60,17 @@ class ObsidianVaultClient:
 
     # ── Low-level helpers ──────────────────────────────────────────
 
+    def _doc_id(self, vault_path: str) -> str:
+        """Generate CouchDB doc ID for a vault path, respecting obfuscation config."""
+        return normalize_doc_id(
+            vault_path,
+            obfuscate_passphrase=self.config.obfuscate_passphrase,
+        )
+
     async def _get_doc(self, path: str) -> dict | None:
         """Fetch a doc by vault path, trying both ID conventions."""
         client = await self._get_client()
-        doc_id = normalize_doc_id(path)
+        doc_id = self._doc_id(path)
 
         # Try normalized ID first (handles '_' prefix → '/_' automatically)
         resp = await client.get(f"/{encode_doc_id(doc_id)}")
@@ -248,7 +255,7 @@ class ObsidianVaultClient:
         """Create or update a note. Returns True on success."""
         client = await self._get_client()
         vault_path = path.lstrip("/")
-        doc_id = normalize_doc_id(vault_path)
+        doc_id = self._doc_id(vault_path)
         encoded_id = encode_doc_id(doc_id)
 
         # Prepare chunks using Rabin-Karp content-defined splitting
