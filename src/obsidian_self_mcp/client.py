@@ -341,6 +341,9 @@ class ObsidianVaultClient:
         if not doc:
             raise ValueError(f"Note not found: {path}")
 
+        # Clear tombstone flag if present (same fix as write_note)
+        doc.pop("deleted", None)
+
         children = doc.get("children", [])
         if not children:
             raise ValueError(f"Note has no chunks: {path}")
