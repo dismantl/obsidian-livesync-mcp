@@ -416,16 +416,50 @@ class ObsidianVaultClient:
         resp.raise_for_status()
         return True
 
-    async def delete_note(self, path: str) -> bool:
-        """Delete a note and all its chunks. Returns True on success."""
+    async def delete_note(self, path: str, hard: bool = False) -> bool:
+        """Delete a note. Defaults to a livesync-compatible soft-delete.
+
+        Soft-delete (default): sets `deleted: True` on the parent doc and
+        bumps `mtime`, preserving chunks. This matches obsidian-livesync's own
+        delete flow (`deleteDBEntryByPath` in `EntryManagerImpls.ts`) — livesync's
+        apply-to-storage path only cleans up filesystem copies when the doc is
+        still retrievable from CouchDB with the `deleted` field set. A CouchDB
+        hard-delete tombstone is invisible to that path, so filesystem copies
+        orphan on every device.
+
+        Hard-delete (`hard=True`): standard CouchDB DELETE of the parent doc
+        plus orphan chunk cleanup. Creates a `_deleted: True` tombstone. Use
+        only for broken-manifest cleanup (missing-chunk recovery) — this form
+        does NOT propagate to filesystem copies on livesync-connected devices.
+        """
         client = await self._get_client()
 
         doc = await self._get_doc(path)
         if not doc:
             raise ValueError(f"Note not found: {path}")
 
-        # Delete chunks first, but skip any still referenced by other notes
-        # (chunks are content-addressed and deduplicated across the vault).
+        if not hard:
+            # Soft-delete: flag + bump mtime, leave chunks alone.
+            now_ms = int(time.time() * 1000)
+            doc["deleted"] = True
+            doc["mtime"] = now_ms
+            doc_encoded = encode_doc_id(doc["_id"])
+            resp = await client.put(f"/{doc_encoded}", json=doc)
+            if resp.status_code == 409:
+                # Conflict — refetch and retry once (same shape as write_note)
+                fresh = await self._get_doc(path)
+                if not fresh:
+                    return True  # Already gone — idempotent success
+                fresh["deleted"] = True
+                fresh["mtime"] = now_ms
+                fresh_id = encode_doc_id(fresh["_id"])
+                resp = await client.put(f"/{fresh_id}", json=fresh)
+            resp.raise_for_status()
+            return True
+
+        # Hard-delete: chunk cleanup + CouchDB DELETE tombstone. Skip any chunk
+        # still referenced by other notes (chunks are content-addressed and
+        # deduplicated across the vault).
         chunk_ids = doc.get("children", [])
         in_use_elsewhere = (
             await self._collect_chunks_in_use_by_other_docs(doc["_id"]) if chunk_ids else set()

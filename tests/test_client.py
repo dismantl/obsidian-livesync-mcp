@@ -416,11 +416,172 @@ async def test_append_note_409_concurrent_modification(client):
         await client.append_note("Notes/log.md", " more")
 
 
-# ── delete_note ───────────────────────────────────────────────────
+# ── delete_note (soft-delete default, livesync-compatible) ───────
 
 
 @respx.mock
-async def test_delete_note(client):
+async def test_delete_note_default_is_soft(client):
+    """Default delete_note should soft-delete: PUT the doc with `deleted=True`
+    and a bumped `mtime`, preserving chunks. This matches obsidian-livesync's
+    own delete flow (deleteDBEntryByPath in EntryManagerImpls.ts) and is the
+    only form livesync's apply-to-storage path cleans up properly on devices.
+    """
+    import json as _json
+
+    original_mtime = 1700000000000
+    doc = _make_parent_doc("notes/old.md", ["h:chunk1aaaaaa"], mtime=original_mtime)
+    _mock_get_doc("notes%2Fold.md", doc)
+
+    # Soft-delete does a PUT on the parent doc — not a CouchDB DELETE.
+    put_route = respx.put(f"{BASE}/notes%2Fold.md").mock(
+        return_value=Response(200, json={"ok": True, "rev": "2-softdel"})
+    )
+
+    result = await client.delete_note("Notes/old.md")
+    assert result is True
+
+    # PUT must have been called with deleted=True and a bumped mtime
+    assert put_route.called, "Soft-delete should PUT the parent doc"
+    body = _json.loads(put_route.calls[0].request.content)
+    assert body.get("deleted") is True, f"Expected deleted=True in body, got: {body}"
+    assert body.get("mtime", 0) > original_mtime, (
+        f"Expected mtime to be bumped past {original_mtime}, got {body.get('mtime')}"
+    )
+    # Chunks must be preserved — livesync needs them for conflict resolution
+    assert body.get("children") == ["h:chunk1aaaaaa"], (
+        f"Expected children chunks preserved in soft-delete, got: {body.get('children')}"
+    )
+
+
+@respx.mock
+async def test_delete_note_soft_preserves_chunks(client):
+    """Soft-delete must NOT touch chunks, even chunks that are unique to the
+    deleted note. Livesync's replication may revive a soft-deleted doc (CRDT-
+    style conflict resolution) and will need those chunks intact to rehydrate
+    the content on another device.
+    """
+    doc = _make_parent_doc("notes/a.md", ["h:only0aaaaaaa"])
+    _mock_get_doc("notes%2Fa.md", doc)
+
+    # Mock chunk endpoints so we can assert they're NOT called. (Without mocks,
+    # respx would raise on any touch — also acceptable — but explicit `called`
+    # assertions make the test's intent obvious.)
+    chunk_get = respx.get(f"{BASE}/h%3Aonly0aaaaaaa").mock(
+        return_value=Response(200, json={"_id": "h:only0aaaaaaa", "_rev": "1-c"})
+    )
+    chunk_delete = respx.delete(f"{BASE}/h%3Aonly0aaaaaaa").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    respx.put(f"{BASE}/notes%2Fa.md").mock(
+        return_value=Response(200, json={"ok": True, "rev": "2-softdel"})
+    )
+
+    result = await client.delete_note("Notes/a.md")
+    assert result is True
+    assert not chunk_get.called, "Soft-delete should not touch chunk docs"
+    assert not chunk_delete.called, "Soft-delete must NOT delete chunks"
+
+
+@respx.mock
+async def test_delete_note_soft_409_retry(client):
+    """On PUT 409 during soft-delete, refetch and retry once using the fresh
+    `_rev`. Mirrors the write_note conflict-resolution pattern at client.py:315.
+    """
+    import json as _json
+
+    doc_v1 = _make_parent_doc("notes/old.md", ["h:chunk1aaaaaa"], _rev="1-abc", mtime=1700000000000)
+    doc_v2 = _make_parent_doc("notes/old.md", ["h:chunk1aaaaaa"], _rev="2-xyz", mtime=1700000000001)
+
+    # First GET returns v1; refetch (after 409) returns v2
+    respx.get(f"{BASE}/notes%2Fold.md").mock(
+        side_effect=[
+            Response(200, json=doc_v1),
+            Response(200, json=doc_v2),
+        ]
+    )
+    respx.get(f"{BASE}/%2Fnotes%2Fold.md").mock(
+        return_value=Response(404, json={"error": "not_found"})
+    )
+
+    put_route = respx.put(f"{BASE}/notes%2Fold.md").mock(
+        side_effect=[
+            Response(409, json={"error": "conflict"}),
+            Response(200, json={"ok": True, "rev": "3-resolved"}),
+        ]
+    )
+
+    result = await client.delete_note("Notes/old.md")
+    assert result is True
+    assert len(put_route.calls) == 2, (
+        f"Expected 2 PUT calls (original + retry), got {len(put_route.calls)}"
+    )
+    # Retry PUT must use the fresh _rev and still carry the soft-delete flag
+    retry_body = _json.loads(put_route.calls[1].request.content)
+    assert retry_body.get("_rev") == "2-xyz", (
+        f"Retry should use refreshed _rev, got: {retry_body.get('_rev')}"
+    )
+    assert retry_body.get("deleted") is True
+
+
+@respx.mock
+async def test_delete_note_soft_409_already_deleted(client):
+    """If the refetch during soft-delete 409 retry returns nothing, the note is
+    already gone (race with another client). Idempotent success.
+    """
+    doc = _make_parent_doc("notes/old.md", [])
+
+    # First GET returns doc; second GET (refetch after 409) returns 404
+    respx.get(f"{BASE}/notes%2Fold.md").mock(
+        side_effect=[
+            Response(200, json=doc),
+            Response(404, json={"error": "not_found"}),
+        ]
+    )
+    respx.get(f"{BASE}/%2Fnotes%2Fold.md").mock(
+        return_value=Response(404, json={"error": "not_found"})
+    )
+
+    # PUT returns 409 both times (second would never fire since refetch is None)
+    respx.put(f"{BASE}/notes%2Fold.md").mock(return_value=Response(409, json={"error": "conflict"}))
+
+    result = await client.delete_note("Notes/old.md")
+    assert result is True  # already gone -> success
+
+
+# ── delete_note (hard-delete opt-in, for broken-manifest cleanup) ────
+
+
+@respx.mock
+async def test_delete_note_hard_opt_in(client):
+    """delete_note(path, hard=True) keeps the pre-fix behavior: CouchDB DELETE
+    on the parent doc plus orphan chunk cleanup. Still needed for broken-
+    manifest cleanup (Rule 3 in the MCP/livesync memory file).
+    """
+    doc = _make_parent_doc("notes/old.md", ["h:chunk1aaaaaa"])
+    _mock_get_doc("notes%2Fold.md", doc)
+    _mock_get_all_file_docs([doc])
+
+    respx.get(f"{BASE}/h%3Achunk1aaaaaa").mock(
+        return_value=Response(200, json={"_id": "h:chunk1aaaaaa", "_rev": "1-chk"})
+    )
+    chunk_delete = respx.delete(f"{BASE}/h%3Achunk1aaaaaa").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    parent_delete = respx.delete(f"{BASE}/notes%2Fold.md").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+
+    result = await client.delete_note("Notes/old.md", hard=True)
+    assert result is True
+    assert chunk_delete.called, "Hard-delete should clean up chunks"
+    assert parent_delete.called, "Hard-delete should DELETE the parent doc"
+
+
+# ── delete_note (legacy hard-delete regression tests) ─────────────
+
+
+@respx.mock
+async def test_delete_note_hard(client):
     doc = _make_parent_doc("notes/old.md", ["h:chunk1aaaaaa"])
     _mock_get_doc("notes%2Fold.md", doc)
     # Reference scan: only this doc in the vault
@@ -435,7 +596,7 @@ async def test_delete_note(client):
     # Parent DELETE
     respx.delete(f"{BASE}/notes%2Fold.md").mock(return_value=Response(200, json={"ok": True}))
 
-    result = await client.delete_note("Notes/old.md")
+    result = await client.delete_note("Notes/old.md", hard=True)
     assert result is True
 
 
@@ -449,7 +610,7 @@ async def test_delete_note_not_found(client):
 
 
 @respx.mock
-async def test_delete_note_409_conflict_retry(client):
+async def test_delete_note_hard_409_conflict_retry(client):
     doc = _make_parent_doc("notes/old.md", ["h:chunk1aaaaaa"])
     _mock_get_doc("notes%2Fold.md", doc)
     # Reference scan: only this doc in the vault
@@ -472,12 +633,12 @@ async def test_delete_note_409_conflict_retry(client):
         return_value=Response(404, json={"error": "not_found"})
     )
 
-    result = await client.delete_note("Notes/old.md")
+    result = await client.delete_note("Notes/old.md", hard=True)
     assert result is True
 
 
 @respx.mock
-async def test_delete_note_409_already_deleted(client):
+async def test_delete_note_hard_409_already_deleted(client):
     doc = _make_parent_doc("notes/old.md", [])
 
     # First GET returns doc; second GET (refetch after 409) returns 404
@@ -496,13 +657,13 @@ async def test_delete_note_409_already_deleted(client):
         return_value=Response(409, json={"error": "conflict"})
     )
 
-    result = await client.delete_note("Notes/old.md")
+    result = await client.delete_note("Notes/old.md", hard=True)
     assert result is True  # Success — note is gone, which is what we wanted
 
 
 @respx.mock
-async def test_delete_note_preserves_shared_chunk(client):
-    """Deleting note A must not delete chunks still referenced by note B.
+async def test_delete_note_hard_preserves_shared_chunk(client):
+    """Hard-deleting note A must not delete chunks still referenced by note B.
 
     Same dedup bug shape as the write_note orphan cleanup — the delete path
     unconditionally removes every chunk in the deleted note's manifest without
@@ -535,7 +696,7 @@ async def test_delete_note_preserves_shared_chunk(client):
     # Parent doc DELETE
     respx.delete(f"{BASE}/notes%2Fa.md").mock(return_value=Response(200, json={"ok": True}))
 
-    result = await client.delete_note("Notes/a.md")
+    result = await client.delete_note("Notes/a.md", hard=True)
     assert result is True
 
     # Shared chunk must NOT be deleted — note B still references it

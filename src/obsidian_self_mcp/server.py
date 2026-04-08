@@ -216,15 +216,28 @@ async def append_note(path: str, content: str) -> str:
 
 @mcp.tool()
 @_tool_error_handler
-async def delete_note(path: str) -> str:
-    """Delete a note and its chunks from the Obsidian vault.
+async def delete_note(path: str, hard: bool = False) -> str:
+    """Delete a note from the Obsidian vault.
+
+    Defaults to a livesync-compatible soft-delete: sets `deleted: True` on
+    the document and preserves its chunks. This is the form the
+    obsidian-livesync plugin emits for its own deletes, and it is the only
+    form that propagates to filesystem copies on livesync-connected devices.
+
+    Pass `hard=True` ONLY for broken-manifest cleanup (e.g. recovering from
+    "missing N chunks" errors). Hard-delete creates a CouchDB tombstone and
+    removes chunks, but does NOT propagate to filesystem copies on
+    livesync-connected devices — orphaned files will remain on disk until
+    manually removed.
 
     Args:
         path: Vault path to the note to delete
+        hard: If True, use CouchDB hard-delete with chunk cleanup. Default
+            False (soft-delete, the livesync-compatible path).
     """
     client = _get_client()
-    await client.delete_note(path)
-    return f"Deleted: {path}"
+    await client.delete_note(path, hard=hard)
+    return f"Deleted: {path}" + (" (hard)" if hard else "")
 
 
 @mcp.tool()

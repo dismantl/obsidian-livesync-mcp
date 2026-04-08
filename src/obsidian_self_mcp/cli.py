@@ -79,12 +79,13 @@ async def _cmd_append(client: ObsidianVaultClient, args):
 
 async def _cmd_delete(client: ObsidianVaultClient, args):
     if not args.y:
-        confirm = input(f"Delete '{args.path}'? [y/N] ")
+        kind = "HARD delete" if args.hard else "delete"
+        confirm = input(f"{kind} '{args.path}'? [y/N] ")
         if confirm.lower() != "y":
             print("Cancelled.")
             return
-    await client.delete_note(args.path)
-    print(f"Deleted: {args.path}")
+    await client.delete_note(args.path, hard=args.hard)
+    print(f"Deleted: {args.path}" + (" (hard)" if args.hard else ""))
 
 
 async def _cmd_props(client: ObsidianVaultClient, args):
@@ -204,6 +205,13 @@ def main():
     p_delete = sub.add_parser("delete", aliases=["rm"], help="Delete a note")
     p_delete.add_argument("path", help="Vault path")
     p_delete.add_argument("-y", action="store_true", help="Skip confirmation")
+    p_delete.add_argument(
+        "--hard",
+        action="store_true",
+        help="Hard-delete (CouchDB tombstone + chunk cleanup). Default is a "
+        "livesync-compatible soft-delete. Use --hard only for broken-manifest "
+        "cleanup; it does NOT propagate to filesystem copies on livesync devices.",
+    )
 
     # props
     p_props = sub.add_parser("props", help="Read/set frontmatter properties")
