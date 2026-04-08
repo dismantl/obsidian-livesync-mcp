@@ -57,12 +57,14 @@ def test_normalize_doc_id_no_obfuscation():
 
 
 def test_normalize_doc_id_no_obfuscation_preserves_structure():
-    assert normalize_doc_id("3 Resources/digests/2026-04-03.md") == "3 resources/digests/2026-04-03.md"
+    result = normalize_doc_id("3 Resources/digests/2026-04-03.md")
+    assert result == "3 resources/digests/2026-04-03.md"
 
 
 def test_normalize_doc_id_case_sensitive():
     """With case_insensitive=False, preserves original casing."""
-    assert normalize_doc_id("Dev Projects/README.md", case_insensitive=False) == "Dev Projects/README.md"
+    result = normalize_doc_id("Dev Projects/README.md", case_insensitive=False)
+    assert result == "Dev Projects/README.md"
 
 
 def test_normalize_doc_id_underscore_prefix():
@@ -80,7 +82,8 @@ def test_normalize_doc_id_empty():
 
 def test_normalize_doc_id_obfuscated():
     """With passphrase, returns f: + SHA-256 hash matching LiveSync."""
-    # Known pair: passphrase "undefined", path "Clippings/Streamlining task list processing with Claude MCP.md"
+    # Known pair: passphrase "undefined", path
+    # "Clippings/Streamlining task list processing with Claude MCP.md"
     result = normalize_doc_id(
         "Clippings/Streamlining task list processing with Claude MCP.md",
         obfuscate_passphrase="undefined",
