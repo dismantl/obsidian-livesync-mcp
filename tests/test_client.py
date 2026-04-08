@@ -191,6 +191,8 @@ async def test_write_note_new(client):
 async def test_write_note_update_existing(client):
     existing = _make_parent_doc("notes/todo.md", ["h:oldchunk0000"])
     _mock_get_doc("notes%2Ftodo.md", existing)
+    # Reference scan for orphan cleanup: only this doc in the vault
+    _mock_get_all_file_docs([existing])
 
     # Chunk creation
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
@@ -211,6 +213,8 @@ async def test_write_note_409_conflict_retry(client):
 
     # First GET returns existing doc
     _mock_get_doc("notes%2Ftodo.md", existing)
+    # Reference scan for orphan cleanup
+    _mock_get_all_file_docs([existing])
 
     # Chunk creation
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
@@ -258,6 +262,60 @@ async def test_write_note_409_deleted_during_write(client):
 
     with pytest.raises(ValueError, match="deleted during write"):
         await client.write_note("Notes/todo.md", "Content")
+
+
+@respx.mock
+async def test_write_note_preserves_shared_chunk(client):
+    """Updating note A must not delete chunks still referenced by note B.
+
+    Chunks are content-addressed and deduplicated across notes — two notes with
+    identical content share the same chunk ID. Orphan cleanup that doesn't check
+    cross-note references causes data loss in the other note.
+    """
+    shared_id = "h:shared000000"
+    a_only_id = "h:aonly0000000"
+
+    old_a = _make_parent_doc("notes/a.md", [shared_id, a_only_id])
+    note_b = _make_parent_doc("notes/b.md", [shared_id])
+
+    # write_note will GET the existing doc A
+    _mock_get_doc("notes%2Fa.md", old_a)
+    # Reference check after fix: returns both A and B so shared_id is seen as in-use
+    _mock_get_all_file_docs([old_a, note_b])
+
+    # New chunks for updated A content
+    respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
+        return_value=Response(201, json={"ok": True, "rev": "1-new"})
+    )
+    # Parent doc A update
+    respx.put(f"{BASE}/notes%2Fa.md").mock(
+        return_value=Response(200, json={"ok": True, "rev": "2-updated"})
+    )
+
+    # Mock the orphan cleanup path for BOTH chunks so failures are visible
+    respx.get(f"{BASE}/{shared_id.replace(':', '%3A')}").mock(
+        return_value=Response(200, json={"_id": shared_id, "_rev": "1-s"})
+    )
+    shared_delete = respx.delete(f"{BASE}/{shared_id.replace(':', '%3A')}").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    respx.get(f"{BASE}/{a_only_id.replace(':', '%3A')}").mock(
+        return_value=Response(200, json={"_id": a_only_id, "_rev": "1-a"})
+    )
+    a_only_delete = respx.delete(f"{BASE}/{a_only_id.replace(':', '%3A')}").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+
+    result = await client.write_note("Notes/a.md", "completely different new content")
+    assert result is True
+
+    # The shared chunk must NOT be deleted — note B still references it
+    assert not shared_delete.called, (
+        "Shared chunk was deleted despite being referenced by another note — "
+        "this is the dedup data-loss bug"
+    )
+    # The truly-orphaned chunk (only A referenced it) SHOULD still be cleaned up
+    assert a_only_delete.called, "Truly-orphaned chunk was not cleaned up"
 
 
 # ── append_note ───────────────────────────────────────────────────
@@ -365,6 +423,8 @@ async def test_append_note_409_concurrent_modification(client):
 async def test_delete_note(client):
     doc = _make_parent_doc("notes/old.md", ["h:chunk1aaaaaa"])
     _mock_get_doc("notes%2Fold.md", doc)
+    # Reference scan: only this doc in the vault
+    _mock_get_all_file_docs([doc])
 
     # Chunk GET for rev
     respx.get(f"{BASE}/h%3Achunk1aaaaaa").mock(
@@ -392,6 +452,8 @@ async def test_delete_note_not_found(client):
 async def test_delete_note_409_conflict_retry(client):
     doc = _make_parent_doc("notes/old.md", ["h:chunk1aaaaaa"])
     _mock_get_doc("notes%2Fold.md", doc)
+    # Reference scan: only this doc in the vault
+    _mock_get_all_file_docs([doc])
 
     # Chunk GET + DELETE
     respx.get(f"{BASE}/h%3Achunk1aaaaaa").mock(
@@ -436,6 +498,53 @@ async def test_delete_note_409_already_deleted(client):
 
     result = await client.delete_note("Notes/old.md")
     assert result is True  # Success — note is gone, which is what we wanted
+
+
+@respx.mock
+async def test_delete_note_preserves_shared_chunk(client):
+    """Deleting note A must not delete chunks still referenced by note B.
+
+    Same dedup bug shape as the write_note orphan cleanup — the delete path
+    unconditionally removes every chunk in the deleted note's manifest without
+    checking whether other notes still reference those chunks.
+    """
+    shared_id = "h:shared000000"
+    a_only_id = "h:aonly0000000"
+
+    doc_a = _make_parent_doc("notes/a.md", [shared_id, a_only_id])
+    note_b = _make_parent_doc("notes/b.md", [shared_id])
+
+    _mock_get_doc("notes%2Fa.md", doc_a)
+    # Reference check after fix: both A and B are seen so shared_id stays in-use
+    _mock_get_all_file_docs([doc_a, note_b])
+
+    # Mock chunk GET + DELETE for both chunks (so failures are visible)
+    respx.get(f"{BASE}/{shared_id.replace(':', '%3A')}").mock(
+        return_value=Response(200, json={"_id": shared_id, "_rev": "1-s"})
+    )
+    shared_delete = respx.delete(f"{BASE}/{shared_id.replace(':', '%3A')}").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    respx.get(f"{BASE}/{a_only_id.replace(':', '%3A')}").mock(
+        return_value=Response(200, json={"_id": a_only_id, "_rev": "1-a"})
+    )
+    a_only_delete = respx.delete(f"{BASE}/{a_only_id.replace(':', '%3A')}").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+
+    # Parent doc DELETE
+    respx.delete(f"{BASE}/notes%2Fa.md").mock(return_value=Response(200, json={"ok": True}))
+
+    result = await client.delete_note("Notes/a.md")
+    assert result is True
+
+    # Shared chunk must NOT be deleted — note B still references it
+    assert not shared_delete.called, (
+        "Shared chunk was deleted despite being referenced by another note — "
+        "this is the dedup data-loss bug"
+    )
+    # a_only chunk should still be deleted (only A referenced it)
+    assert a_only_delete.called, "Chunk exclusive to deleted note was not cleaned up"
 
 
 # ── list_notes ────────────────────────────────────────────────────
@@ -592,6 +701,8 @@ async def test_update_frontmatter_merge(client):
     doc = _make_parent_doc("notes/fm.md", ["h:fmchunk00000"])
     _mock_get_doc("notes%2Ffm.md", doc)
     _mock_all_docs({"h:fmchunk00000": content})
+    # Reference scan for orphan cleanup in write_note
+    _mock_get_all_file_docs([doc])
 
     # write_note will: create chunk, then update parent
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
@@ -844,6 +955,8 @@ async def test_write_note_cleans_up_orphan_chunks(client):
     """Updating a note should delete old chunks no longer referenced."""
     existing = _make_parent_doc("notes/todo.md", ["h:oldchunk0000"])
     _mock_get_doc("notes%2Ftodo.md", existing)
+    # Reference scan: only this doc, so the old chunk is truly orphaned
+    _mock_get_all_file_docs([existing])
 
     # New chunk creation
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
@@ -872,6 +985,8 @@ async def test_write_note_orphan_cleanup_failure_nonfatal(client):
     """Failed chunk cleanup should log warning, not fail the write."""
     existing = _make_parent_doc("notes/todo.md", ["h:oldchunk0000"])
     _mock_get_doc("notes%2Ftodo.md", existing)
+    # Reference scan: only this doc, so the old chunk is considered orphaned
+    _mock_get_all_file_docs([existing])
 
     # New chunk creation
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(

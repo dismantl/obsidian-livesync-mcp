@@ -128,6 +128,21 @@ class ObsidianVaultClient:
             except Exception:
                 logger.warning("Error cleaning up orphan chunk %s", chunk_id, exc_info=True)
 
+    async def _collect_chunks_in_use_by_other_docs(self, exclude_doc_id: str) -> set[str]:
+        """Return all chunk IDs referenced by file docs other than exclude_doc_id.
+
+        Chunks are content-addressed and deduplicated: two notes with identical
+        content share the same chunk ID. Orphan cleanup on write/delete must
+        consult this set before deleting a chunk, or it will break the other notes.
+        """
+        all_docs = await self._get_all_file_docs()
+        in_use: set[str] = set()
+        for doc in all_docs:
+            if doc.get("_id") == exclude_doc_id:
+                continue
+            in_use.update(doc.get("children", []))
+        return in_use
+
     async def _get_all_file_docs(self) -> list[dict]:
         """Fetch all file docs (skip chunks, design docs, index docs)."""
         client = await self._get_client()
@@ -325,11 +340,16 @@ class ObsidianVaultClient:
             resp = await client.put(f"/{encoded_id}", json=new_doc)
             resp.raise_for_status()
 
-        # Clean up orphaned chunks (best-effort)
+        # Clean up orphaned chunks (best-effort). Chunks are content-addressed
+        # and shared between notes, so we must exclude any still referenced
+        # elsewhere or we'll corrupt other notes.
         new_children = set(chunk_ids)
-        orphaned = old_children - new_children
-        if orphaned:
-            await self._delete_orphan_chunks(list(orphaned))
+        removed = old_children - new_children
+        if removed:
+            in_use_elsewhere = await self._collect_chunks_in_use_by_other_docs(doc_id)
+            truly_orphaned = removed - in_use_elsewhere
+            if truly_orphaned:
+                await self._delete_orphan_chunks(list(truly_orphaned))
 
         return True
 
@@ -404,10 +424,16 @@ class ObsidianVaultClient:
         if not doc:
             raise ValueError(f"Note not found: {path}")
 
-        # Delete chunks first
+        # Delete chunks first, but skip any still referenced by other notes
+        # (chunks are content-addressed and deduplicated across the vault).
         chunk_ids = doc.get("children", [])
+        in_use_elsewhere = (
+            await self._collect_chunks_in_use_by_other_docs(doc["_id"]) if chunk_ids else set()
+        )
         failed_chunks = []
         for chunk_id in chunk_ids:
+            if chunk_id in in_use_elsewhere:
+                continue
             resp = await client.get(f"/{encode_doc_id(chunk_id)}")
             if resp.status_code == 200:
                 chunk_rev = resp.json().get("_rev")
