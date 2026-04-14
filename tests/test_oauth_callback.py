@@ -1,6 +1,7 @@
 """Tests for the OAuth callback route handler."""
 
 import time
+from base64 import b64decode
 from unittest.mock import AsyncMock
 
 import httpx
@@ -9,6 +10,7 @@ import pytest
 import respx
 from cryptography.hazmat.primitives.asymmetric import rsa
 from starlette.testclient import TestClient
+from urllib.parse import unquote_plus
 
 from obsidian_livesync_mcp.config import Config
 from obsidian_livesync_mcp.oauth_callback import _validate_id_token, handle_oauth_callback
@@ -336,6 +338,77 @@ async def test_callback_uses_client_secret_basic_for_token_exchange(provider, rs
     assert captured["authorization"] == "Basic bWNwLWNsaWVudC1pZDptY3AtY2xpZW50LXNlY3JldA=="
     assert "client_id=" not in captured["body"]
     assert "client_secret=" not in captured["body"]
+
+
+async def test_callback_urlencodes_basic_auth_credentials(provider, rsa_keys):
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    private_key, _ = rsa_keys
+    claims = {
+        "iss": ISSUER_URL,
+        "aud": "client+id",
+        "sub": "user-123",
+        "email": "user@example.com",
+        "email_verified": True,
+        "exp": int(time.time()) + 300,
+        "iat": int(time.time()),
+    }
+    id_token = _make_id_token(private_key, claims)
+
+    provider.config = Config(
+        couch_url="http://localhost:5984",
+        oauth_issuer_url=ISSUER_URL,
+        oauth_client_id="client+id",
+        oauth_client_secret="secret+value",
+        oauth_authorized_email="user@example.com",
+    )
+
+    provider.ephemeral.save(
+        "state:valid-state",
+        {
+            "original_state": "client-state",
+            "code_challenge": "challenge",
+            "redirect_uri": "https://claude.ai/callback",
+            "redirect_uri_provided_explicitly": True,
+            "scopes": [],
+            "resource": None,
+            "client_id": "client1",
+            "expires_at": time.time() + 600,
+        },
+    )
+
+    async def endpoint(request):
+        return await handle_oauth_callback(request, provider)
+
+    app = Starlette(routes=[Route("/oauth/callback", endpoint)])
+    client = TestClient(app, raise_server_exceptions=False, follow_redirects=False)
+
+    captured = {}
+
+    def token_handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization")
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "oidc_access",
+                "id_token": id_token,
+                "token_type": "Bearer",
+            },
+        )
+
+    with respx.mock:
+        respx.post(f"{ISSUER_URL}/token").mock(side_effect=token_handler)
+        response = client.get("/oauth/callback?code=oidc-code&state=valid-state")
+
+    assert response.status_code == 302
+    scheme, encoded = captured["authorization"].split(" ", 1)
+    assert scheme == "Basic"
+    username, password = b64decode(encoded).decode().split(":", 1)
+    assert username == "client%2Bid"
+    assert password == "secret%2Bvalue"
+    assert unquote_plus(username) == "client+id"
+    assert unquote_plus(password) == "secret+value"
 
 
 async def test_callback_does_not_depend_on_provider_http_client(provider, rsa_keys):

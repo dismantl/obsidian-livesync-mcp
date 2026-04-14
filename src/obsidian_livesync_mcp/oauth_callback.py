@@ -9,6 +9,8 @@ authorization code back to the MCP client.
 import logging
 import secrets
 import time
+from base64 import b64encode
+from urllib.parse import quote_plus
 from urllib.parse import urlencode
 
 import httpx
@@ -27,6 +29,18 @@ def _error_redirect(redirect_uri: str, state: str | None, error: str, descriptio
     if state:
         params["state"] = state
     return RedirectResponse(url=f"{redirect_uri}?{urlencode(params)}", status_code=302)
+
+
+def _build_basic_auth_header(client_id: str, client_secret: str) -> str:
+    """Build RFC 6749 client_secret_basic credentials for Authelia.
+
+    Authelia expects the client_id and client_secret to be individually
+    application/x-www-form-urlencoded before base64 encoding.
+    """
+    encoded_client_id = quote_plus(client_id)
+    encoded_client_secret = quote_plus(client_secret)
+    token = b64encode(f"{encoded_client_id}:{encoded_client_secret}".encode()).decode()
+    return f"Basic {token}"
 
 
 async def handle_oauth_callback(
@@ -78,7 +92,12 @@ async def handle_oauth_callback(
                     "code": code,
                     "redirect_uri": provider._callback_url,
                 },
-                auth=(provider.config.oauth_client_id, provider.config.oauth_client_secret),
+                headers={
+                    "Authorization": _build_basic_auth_header(
+                        provider.config.oauth_client_id,
+                        provider.config.oauth_client_secret,
+                    )
+                },
             )
         if token_response.status_code != 200:
             logger.error(
