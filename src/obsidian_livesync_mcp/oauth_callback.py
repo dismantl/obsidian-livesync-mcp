@@ -70,15 +70,16 @@ async def handle_oauth_callback(
 
     # Exchange OIDC code for tokens
     try:
-        token_response = await provider.http_client.post(
-            provider._token_endpoint,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": provider._callback_url,
-            },
-            auth=(provider.config.oauth_client_id, provider.config.oauth_client_secret),
-        )
+        async with provider._new_http_client() as client:
+            token_response = await client.post(
+                provider._token_endpoint,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": provider._callback_url,
+                },
+                auth=(provider.config.oauth_client_id, provider.config.oauth_client_secret),
+            )
         if token_response.status_code != 200:
             logger.error(
                 "OIDC token exchange failed: %d %s",

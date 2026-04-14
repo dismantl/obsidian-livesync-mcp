@@ -84,6 +84,7 @@ class OIDCDelegatingProvider(OAuthAuthorizationServerProvider):
         self.resource_url = resource_url
         self.api_key = api_key
         self.ephemeral = EphemeralStore()
+        self._http_timeout = http_client.timeout
 
         # Populated by initialize()
         self._authorization_endpoint: str = ""
@@ -91,10 +92,14 @@ class OIDCDelegatingProvider(OAuthAuthorizationServerProvider):
         self._jwks_uri: str = ""
         self._jwks: dict = {}
 
+    def _new_http_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=self._http_timeout)
+
     async def initialize(self) -> None:
         """Fetch OIDC discovery document and JWKS. Must be called before use."""
         discovery_url = f"{self.config.oauth_issuer_url}/.well-known/openid-configuration"
-        resp = await self.http_client.get(discovery_url)
+        async with self._new_http_client() as client:
+            resp = await client.get(discovery_url)
         if resp.status_code != 200:
             raise RuntimeError(f"OIDC discovery failed at {discovery_url}: HTTP {resp.status_code}")
         discovery = resp.json()
@@ -107,7 +112,8 @@ class OIDCDelegatingProvider(OAuthAuthorizationServerProvider):
         logger.info("OIDC provider initialized from %s", self.config.oauth_issuer_url)
 
     async def _refresh_jwks(self) -> None:
-        resp = await self.http_client.get(self._jwks_uri)
+        async with self._new_http_client() as client:
+            resp = await client.get(self._jwks_uri)
         if resp.status_code != 200:
             raise RuntimeError(f"JWKS fetch failed at {self._jwks_uri}: HTTP {resp.status_code}")
         self._jwks = resp.json()

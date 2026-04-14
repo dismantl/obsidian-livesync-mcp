@@ -338,6 +338,66 @@ async def test_callback_uses_client_secret_basic_for_token_exchange(provider, rs
     assert "client_secret=" not in captured["body"]
 
 
+async def test_callback_does_not_depend_on_provider_http_client(provider, rsa_keys):
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    private_key, _ = rsa_keys
+    claims = {
+        "iss": ISSUER_URL,
+        "aud": "mcp-client-id",
+        "sub": "user-123",
+        "email": "user@example.com",
+        "email_verified": True,
+        "exp": int(time.time()) + 300,
+        "iat": int(time.time()),
+    }
+    id_token = _make_id_token(private_key, claims)
+
+    provider.ephemeral.save(
+        "state:valid-state",
+        {
+            "original_state": "client-state",
+            "code_challenge": "challenge",
+            "redirect_uri": "https://claude.ai/callback",
+            "redirect_uri_provided_explicitly": True,
+            "scopes": [],
+            "resource": None,
+            "client_id": "client1",
+            "expires_at": time.time() + 600,
+        },
+    )
+
+    async def endpoint(request):
+        return await handle_oauth_callback(request, provider)
+
+    app = Starlette(routes=[Route("/oauth/callback", endpoint)])
+    client = TestClient(app, raise_server_exceptions=False, follow_redirects=False)
+
+    class BrokenClient:
+        async def post(self, *args, **kwargs):
+            raise AssertionError("callback should not use provider.http_client")
+
+    provider.http_client = BrokenClient()
+
+    with respx.mock:
+        respx.post(f"{ISSUER_URL}/token").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "access_token": "oidc_access",
+                    "id_token": id_token,
+                    "token_type": "Bearer",
+                },
+            )
+        )
+
+        response = client.get("/oauth/callback?code=oidc-code&state=valid-state")
+
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("https://claude.ai/callback?")
+
+
 async def test_callback_unauthorized_email(provider, rsa_keys):
     from starlette.applications import Starlette
     from starlette.routing import Route
