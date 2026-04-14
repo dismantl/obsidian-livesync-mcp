@@ -201,6 +201,7 @@ async def test_callback_oidc_error_forwarded(provider):
         {
             "original_state": "client-state",
             "code_challenge": "challenge",
+            "upstream_code_verifier": "v" * 43,
             "redirect_uri": "https://claude.ai/callback",
             "redirect_uri_provided_explicitly": True,
             "scopes": [],
@@ -244,6 +245,7 @@ async def test_callback_success_redirects_with_code(provider, rsa_keys):
         {
             "original_state": "client-state",
             "code_challenge": "challenge",
+            "upstream_code_verifier": "v" * 43,
             "redirect_uri": "https://claude.ai/callback",
             "redirect_uri_provided_explicitly": True,
             "scopes": [],
@@ -301,6 +303,7 @@ async def test_callback_uses_client_secret_basic_for_token_exchange(provider, rs
         {
             "original_state": "client-state",
             "code_challenge": "challenge",
+            "upstream_code_verifier": "v" * 43,
             "redirect_uri": "https://claude.ai/callback",
             "redirect_uri_provided_explicitly": True,
             "scopes": [],
@@ -336,6 +339,8 @@ async def test_callback_uses_client_secret_basic_for_token_exchange(provider, rs
 
     assert response.status_code == 302
     assert captured["authorization"] == "Basic bWNwLWNsaWVudC1pZDptY3AtY2xpZW50LXNlY3JldA=="
+    assert "code_verifier=" in captured["body"]
+    assert "code_verifier=" + ("v" * 43) in captured["body"]
     assert "client_id=" not in captured["body"]
     assert "client_secret=" not in captured["body"]
 
@@ -369,6 +374,7 @@ async def test_callback_urlencodes_basic_auth_credentials(provider, rsa_keys):
         {
             "original_state": "client-state",
             "code_challenge": "challenge",
+            "upstream_code_verifier": "v" * 43,
             "redirect_uri": "https://claude.ai/callback",
             "redirect_uri_provided_explicitly": True,
             "scopes": [],
@@ -432,6 +438,7 @@ async def test_callback_does_not_depend_on_provider_http_client(provider, rsa_ke
         {
             "original_state": "client-state",
             "code_challenge": "challenge",
+            "upstream_code_verifier": "v" * 43,
             "redirect_uri": "https://claude.ai/callback",
             "redirect_uri_provided_explicitly": True,
             "scopes": [],
@@ -492,6 +499,7 @@ async def test_callback_unauthorized_email(provider, rsa_keys):
         {
             "original_state": "client-state",
             "code_challenge": "challenge",
+            "upstream_code_verifier": "v" * 43,
             "redirect_uri": "https://claude.ai/callback",
             "redirect_uri_provided_explicitly": True,
             "scopes": [],

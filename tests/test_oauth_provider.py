@@ -202,8 +202,9 @@ async def test_authorize_forwards_pkce_to_oidc_provider(provider, sample_client)
 
     url = await provider.authorize(sample_client, params)
 
-    assert "code_challenge=challenge_value" in url
+    assert "code_challenge=" in url
     assert "code_challenge_method=S256" in url
+    assert "code_challenge=challenge_value" not in url
 
 
 async def test_authorize_stores_state_mapping(provider, sample_client):
@@ -231,6 +232,7 @@ async def test_authorize_stores_state_mapping(provider, sample_client):
     assert stored["original_state"] == "client-state"
     assert stored["code_challenge"] == "test_challenge"
     assert stored["client_id"] == "claude-client-1"
+    assert len(stored["upstream_code_verifier"]) >= 43
 
 
 # ── load/exchange authorization code ──────────────────────────────

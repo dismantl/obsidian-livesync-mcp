@@ -91,6 +91,7 @@ async def handle_oauth_callback(
                     "grant_type": "authorization_code",
                     "code": code,
                     "redirect_uri": provider._callback_url,
+                    "code_verifier": auth_state["upstream_code_verifier"],
                 },
                 headers={
                     "Authorization": _build_basic_auth_header(

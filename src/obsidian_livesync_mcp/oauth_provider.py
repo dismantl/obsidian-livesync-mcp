@@ -8,6 +8,8 @@ while acting as the OAuth authorization server for MCP clients.
 import logging
 import secrets
 import time
+from base64 import urlsafe_b64encode
+from hashlib import sha256
 from urllib.parse import urlencode
 
 import httpx
@@ -95,6 +97,15 @@ class OIDCDelegatingProvider(OAuthAuthorizationServerProvider):
     def _new_http_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=self._http_timeout)
 
+    @staticmethod
+    def _generate_pkce_verifier() -> str:
+        # 64 urlsafe characters keeps us well above the RFC 7636 minimum of 43.
+        return secrets.token_urlsafe(48)
+
+    @staticmethod
+    def _pkce_challenge_s256(verifier: str) -> str:
+        return urlsafe_b64encode(sha256(verifier.encode()).digest()).decode().rstrip("=")
+
     async def initialize(self) -> None:
         """Fetch OIDC discovery document and JWKS. Must be called before use."""
         discovery_url = f"{self.config.oauth_issuer_url}/.well-known/openid-configuration"
@@ -136,12 +147,15 @@ class OIDCDelegatingProvider(OAuthAuthorizationServerProvider):
     ) -> str:
         """Store client's auth params and redirect to OIDC provider for login."""
         internal_state = secrets.token_urlsafe(32)
+        upstream_code_verifier = self._generate_pkce_verifier()
+        upstream_code_challenge = self._pkce_challenge_s256(upstream_code_verifier)
 
         self.ephemeral.save(
             f"state:{internal_state}",
             {
                 "original_state": params.state,
                 "code_challenge": params.code_challenge,
+                "upstream_code_verifier": upstream_code_verifier,
                 "redirect_uri": str(params.redirect_uri),
                 "redirect_uri_provided_explicitly": params.redirect_uri_provided_explicitly,
                 "scopes": params.scopes or [],
@@ -158,7 +172,7 @@ class OIDCDelegatingProvider(OAuthAuthorizationServerProvider):
             "redirect_uri": self._callback_url,
             "state": internal_state,
             "scope": "openid email profile",
-            "code_challenge": params.code_challenge,
+            "code_challenge": upstream_code_challenge,
             "code_challenge_method": "S256",
         }
         redirect_url = f"{self._authorization_endpoint}?{urlencode(oidc_params)}"
