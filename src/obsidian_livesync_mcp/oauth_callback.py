@@ -129,6 +129,14 @@ async def handle_oauth_callback(
             redirect_uri, original_state, "access_denied", "ID token validation failed"
         )
 
+    if "email" not in claims or "email_verified" not in claims:
+        userinfo = await _fetch_userinfo(token_data.get("access_token"), provider)
+        if userinfo is None:
+            return _error_redirect(
+                redirect_uri, original_state, "access_denied", "userinfo lookup failed"
+            )
+        claims = {**userinfo, **claims}
+
     # Check user authorization
     email = claims.get("email")
     if not claims.get("email_verified", False):
@@ -206,7 +214,7 @@ async def _validate_id_token(
                 algorithms=provider.jwks_algorithms,
                 issuer=provider.config.oauth_issuer_url,
                 audience=provider.config.oauth_client_id,
-                options={"require": ["exp", "iss", "aud", "email"]},
+                options={"require": ["exp", "iss", "aud"]},
             )
             return claims
 
@@ -222,3 +230,22 @@ async def _validate_id_token(
             return None
 
     return None
+
+
+async def _fetch_userinfo(access_token: str | None, provider: OIDCDelegatingProvider) -> dict | None:
+    if not access_token or not provider._userinfo_endpoint:
+        return None
+
+    try:
+        async with provider._new_http_client() as client:
+            response = await client.get(
+                provider._userinfo_endpoint,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        if response.status_code != 200:
+            logger.warning("UserInfo lookup failed: HTTP %d %s", response.status_code, response.text)
+            return None
+        return response.json()
+    except httpx.HTTPError:
+        logger.exception("UserInfo lookup HTTP error")
+        return None

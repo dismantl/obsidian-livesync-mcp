@@ -97,6 +97,22 @@ async def test_validate_id_token_success(provider, rsa_keys):
     assert result["email"] == "user@example.com"
 
 
+async def test_validate_id_token_allows_missing_email_claim(provider, rsa_keys):
+    private_key, _ = rsa_keys
+    claims = {
+        "iss": ISSUER_URL,
+        "aud": "mcp-client-id",
+        "sub": "user-123",
+        "exp": int(time.time()) + 300,
+        "iat": int(time.time()),
+    }
+    token = _make_id_token(private_key, claims)
+
+    result = await _validate_id_token(token, provider)
+    assert result is not None
+    assert result["sub"] == "user-123"
+
+
 async def test_validate_id_token_expired(provider, rsa_keys):
     private_key, _ = rsa_keys
     claims = {
@@ -280,6 +296,74 @@ async def test_callback_success_redirects_with_code(provider, rsa_keys):
     assert location.startswith("https://claude.ai/callback?")
     assert "code=" in location
     assert "state=client-state" in location
+
+
+async def test_callback_fetches_userinfo_when_id_token_missing_email(provider, rsa_keys):
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    private_key, _ = rsa_keys
+    claims = {
+        "iss": ISSUER_URL,
+        "aud": "mcp-client-id",
+        "sub": "user-123",
+        "exp": int(time.time()) + 300,
+        "iat": int(time.time()),
+    }
+    id_token = _make_id_token(private_key, claims)
+
+    provider._userinfo_endpoint = f"{ISSUER_URL}/userinfo"
+
+    provider.ephemeral.save(
+        "state:valid-state",
+        {
+            "original_state": "client-state",
+            "code_challenge": "challenge",
+            "upstream_code_verifier": "v" * 43,
+            "redirect_uri": "https://claude.ai/callback",
+            "redirect_uri_provided_explicitly": True,
+            "scopes": [],
+            "resource": None,
+            "client_id": "client1",
+            "expires_at": time.time() + 600,
+        },
+    )
+
+    async def endpoint(request):
+        return await handle_oauth_callback(request, provider)
+
+    app = Starlette(routes=[Route("/oauth/callback", endpoint)])
+    client = TestClient(app, raise_server_exceptions=False, follow_redirects=False)
+
+    with respx.mock:
+        respx.post(f"{ISSUER_URL}/token").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "access_token": "oidc_access",
+                    "id_token": id_token,
+                    "token_type": "Bearer",
+                },
+            )
+        )
+        respx.get(f"{ISSUER_URL}/userinfo").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "sub": "user-123",
+                    "email": "user@example.com",
+                    "email_verified": True,
+                },
+            )
+        )
+
+        response = client.get("/oauth/callback?code=oidc-code&state=valid-state")
+
+    assert response.status_code == 302
+    location = response.headers["location"]
+    assert location.startswith("https://claude.ai/callback?")
+    assert "code=" in location
+    assert "error=" not in location
 
 
 async def test_callback_uses_client_secret_basic_for_token_exchange(provider, rsa_keys):

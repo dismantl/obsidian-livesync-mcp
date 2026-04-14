@@ -92,6 +92,7 @@ class OIDCDelegatingProvider(OAuthAuthorizationServerProvider):
         self._authorization_endpoint: str = ""
         self._token_endpoint: str = ""
         self._jwks_uri: str = ""
+        self._userinfo_endpoint: str = ""
         self._jwks: dict = {}
 
     def _new_http_client(self) -> httpx.AsyncClient:
@@ -118,6 +119,7 @@ class OIDCDelegatingProvider(OAuthAuthorizationServerProvider):
         self._authorization_endpoint = discovery["authorization_endpoint"]
         self._token_endpoint = discovery["token_endpoint"]
         self._jwks_uri = discovery["jwks_uri"]
+        self._userinfo_endpoint = discovery.get("userinfo_endpoint", "")
 
         await self._refresh_jwks()
         logger.info("OIDC provider initialized from %s", self.config.oauth_issuer_url)
