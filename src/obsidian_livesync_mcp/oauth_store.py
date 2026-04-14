@@ -39,31 +39,49 @@ class OAuthStore:
     def __init__(self, couch_url: str, couch_user: str, couch_pass: str):
         self._base_url = f"{couch_url}/{OAUTH_DB_NAME}"
         self._couch_url = couch_url
-        self._client = httpx.AsyncClient(
-            base_url=self._base_url,
-            auth=(couch_user, couch_pass),
-            headers={"Content-Type": "application/json"},
-            timeout=30.0,
-        )
+        self._client_kwargs = {
+            "base_url": self._base_url,
+            "auth": (couch_user, couch_pass),
+            "headers": {"Content-Type": "application/json"},
+            "timeout": 30.0,
+        }
+        # Kept for backward compatibility in tests/introspection, but request
+        # paths use loop-local clients via _new_client().
+        self._client = httpx.AsyncClient(**self._client_kwargs)
         self._purge_task: asyncio.Task | None = None
+
+    def _new_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(**self._client_kwargs)
+
+    async def _get(self, path: str, **kwargs) -> httpx.Response:
+        async with self._new_client() as client:
+            return await client.get(path, **kwargs)
+
+    async def _put(self, path: str, **kwargs) -> httpx.Response:
+        async with self._new_client() as client:
+            return await client.put(path, **kwargs)
+
+    async def _delete(self, path: str, **kwargs) -> httpx.Response:
+        async with self._new_client() as client:
+            return await client.delete(path, **kwargs)
 
     async def ensure_db(self) -> None:
         """Create the OAuth database and design document if they don't exist."""
         # Create database
-        resp = await self._client.put(f"{self._couch_url}/{OAUTH_DB_NAME}")
+        resp = await self._put(f"{self._couch_url}/{OAUTH_DB_NAME}")
         if resp.status_code not in (201, 412):  # 412 = already exists
             resp.raise_for_status()
 
         # Create or update design document
-        resp = await self._client.get("/_design/oauth")
+        resp = await self._get("/_design/oauth")
         if resp.status_code == 200:
             existing = resp.json()
             if existing.get("views") != DESIGN_DOC["views"]:
                 doc = {**DESIGN_DOC, "_rev": existing["_rev"]}
-                resp = await self._client.put("/_design/oauth", json=doc)
+                resp = await self._put("/_design/oauth", json=doc)
                 resp.raise_for_status()
         elif resp.status_code == 404:
-            resp = await self._client.put("/_design/oauth", json=DESIGN_DOC)
+            resp = await self._put("/_design/oauth", json=DESIGN_DOC)
             resp.raise_for_status()
         else:
             resp.raise_for_status()
@@ -76,7 +94,7 @@ class OAuthStore:
     # ── Client CRUD ───────────────────────────────────────────────
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        resp = await self._client.get(f"/client:{client_id}")
+        resp = await self._get(f"/client:{client_id}")
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -88,16 +106,16 @@ class OAuthStore:
         doc["_id"] = f"client:{client.client_id}"
         doc["type"] = "client"
         # Check for existing doc to get _rev
-        existing = await self._client.get(f"/client:{client.client_id}")
+        existing = await self._get(f"/client:{client.client_id}")
         if existing.status_code == 200:
             doc["_rev"] = existing.json()["_rev"]
-        resp = await self._client.put(f"/client:{client.client_id}", json=doc)
+        resp = await self._put(f"/client:{client.client_id}", json=doc)
         resp.raise_for_status()
 
     # ── Access Token CRUD ─────────────────────────────────────────
 
     async def get_access_token(self, token: str) -> AccessToken | None:
-        resp = await self._client.get(f"/access_token:{token}")
+        resp = await self._get(f"/access_token:{token}")
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -125,13 +143,13 @@ class OAuthStore:
             "resource": token.resource,
             "token_pair_id": token_pair_id,
         }
-        resp = await self._client.put(f"/access_token:{token.token}", json=doc)
+        resp = await self._put(f"/access_token:{token.token}", json=doc)
         resp.raise_for_status()
 
     # ── Refresh Token CRUD ────────────────────────────────────────
 
     async def get_refresh_token(self, token: str) -> RefreshToken | None:
-        resp = await self._client.get(f"/refresh_token:{token}")
+        resp = await self._get(f"/refresh_token:{token}")
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -157,14 +175,14 @@ class OAuthStore:
             "expires_at": token.expires_at,
             "token_pair_id": token_pair_id,
         }
-        resp = await self._client.put(f"/refresh_token:{token.token}", json=doc)
+        resp = await self._put(f"/refresh_token:{token.token}", json=doc)
         resp.raise_for_status()
 
     # ── Cascading Revocation ──────────────────────────────────────
 
     async def get_tokens_by_pair_id(self, pair_id: str) -> list[dict]:
         """Query the by_token_pair view to find all tokens sharing a pair ID."""
-        resp = await self._client.get(
+        resp = await self._get(
             "/_design/oauth/_view/by_token_pair",
             params={"key": f'"{pair_id}"', "include_docs": "true"},
         )
@@ -173,7 +191,7 @@ class OAuthStore:
 
     async def delete_token(self, doc_id: str) -> None:
         """Delete a token document by its full _id (e.g., 'access_token:xyz')."""
-        resp = await self._client.get(f"/{doc_id}")
+        resp = await self._get(f"/{doc_id}")
         if resp.status_code == 404:
             return
         resp.raise_for_status()
@@ -187,7 +205,7 @@ class OAuthStore:
         other tokens sharing that pair ID (cascading revocation).
         """
         doc_id = f"{token_type}:{token_value}"
-        resp = await self._client.get(f"/{doc_id}")
+        resp = await self._get(f"/{doc_id}")
         if resp.status_code == 404:
             return
         if resp.status_code != 200:
@@ -226,7 +244,7 @@ class OAuthStore:
     async def purge_expired(self) -> int:
         """Delete all expired token documents. Returns count of deleted docs."""
         now = int(time.time())
-        resp = await self._client.get(
+        resp = await self._get(
             "/_design/oauth/_view/by_expiry",
             params={"endkey": str(now), "include_docs": "true"},
         )
@@ -248,7 +266,7 @@ class OAuthStore:
     # ── Helpers ────────────────────────────────────────────────────
 
     async def _delete_doc(self, doc_id: str, rev: str) -> None:
-        resp = await self._client.delete(f"/{doc_id}", params={"rev": rev})
+        resp = await self._delete(f"/{doc_id}", params={"rev": rev})
         if resp.status_code not in (200, 202, 404):
             resp.raise_for_status()
 

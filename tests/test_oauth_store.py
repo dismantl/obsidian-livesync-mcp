@@ -114,6 +114,31 @@ async def test_get_client_not_found(store, mock_couch):
     assert result is None
 
 
+async def test_get_access_token_does_not_depend_on_store_client(store, mock_couch):
+    token_doc = {
+        "_id": "access_token:tok_abc",
+        "_rev": "1-abc",
+        "type": "access_token",
+        "token": "tok_abc",
+        "client_id": "client1",
+        "scopes": [],
+        "expires_at": int(time.time()) + 3600,
+        "token_pair_id": "pair1",
+    }
+
+    class BrokenClient:
+        async def get(self, *args, **kwargs):
+            raise AssertionError("store should not use its shared _client during requests")
+
+    store._client = BrokenClient()
+    mock_couch.get("/access_token:tok_abc").mock(return_value=httpx.Response(200, json=token_doc))
+
+    result = await store.get_access_token("tok_abc")
+
+    assert result is not None
+    assert result.token == "tok_abc"
+
+
 # ── Access Token CRUD ─────────────────────────────────────────────
 
 
