@@ -190,6 +190,22 @@ async def test_authorize_returns_oidc_redirect(provider, sample_client):
     assert "scope=openid+email+profile" in url
 
 
+async def test_authorize_forwards_pkce_to_oidc_provider(provider, sample_client):
+    params = AuthorizationParams(
+        state="client-state-123",
+        scopes=["openid"],
+        code_challenge="challenge_value",
+        redirect_uri="https://claude.ai/oauth/callback",
+        redirect_uri_provided_explicitly=True,
+        resource=None,
+    )
+
+    url = await provider.authorize(sample_client, params)
+
+    assert "code_challenge=challenge_value" in url
+    assert "code_challenge_method=S256" in url
+
+
 async def test_authorize_stores_state_mapping(provider, sample_client):
     params = AuthorizationParams(
         state="client-state",

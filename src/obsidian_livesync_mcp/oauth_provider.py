@@ -152,6 +152,8 @@ class OIDCDelegatingProvider(OAuthAuthorizationServerProvider):
             "redirect_uri": self._callback_url,
             "state": internal_state,
             "scope": "openid email profile",
+            "code_challenge": params.code_challenge,
+            "code_challenge_method": "S256",
         }
         redirect_url = f"{self._authorization_endpoint}?{urlencode(oidc_params)}"
         return redirect_url
