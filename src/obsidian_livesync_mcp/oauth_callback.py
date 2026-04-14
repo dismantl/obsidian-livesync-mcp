@@ -76,9 +76,8 @@ async def handle_oauth_callback(
                 "grant_type": "authorization_code",
                 "code": code,
                 "redirect_uri": provider._callback_url,
-                "client_id": provider.config.oauth_client_id,
-                "client_secret": provider.config.oauth_client_secret,
             },
+            auth=(provider.config.oauth_client_id, provider.config.oauth_client_secret),
         )
         if token_response.status_code != 200:
             logger.error(

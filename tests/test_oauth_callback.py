@@ -278,6 +278,66 @@ async def test_callback_success_redirects_with_code(provider, rsa_keys):
     assert "state=client-state" in location
 
 
+async def test_callback_uses_client_secret_basic_for_token_exchange(provider, rsa_keys):
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    private_key, _ = rsa_keys
+    claims = {
+        "iss": ISSUER_URL,
+        "aud": "mcp-client-id",
+        "sub": "user-123",
+        "email": "user@example.com",
+        "email_verified": True,
+        "exp": int(time.time()) + 300,
+        "iat": int(time.time()),
+    }
+    id_token = _make_id_token(private_key, claims)
+
+    provider.ephemeral.save(
+        "state:valid-state",
+        {
+            "original_state": "client-state",
+            "code_challenge": "challenge",
+            "redirect_uri": "https://claude.ai/callback",
+            "redirect_uri_provided_explicitly": True,
+            "scopes": [],
+            "resource": None,
+            "client_id": "client1",
+            "expires_at": time.time() + 600,
+        },
+    )
+
+    async def endpoint(request):
+        return await handle_oauth_callback(request, provider)
+
+    app = Starlette(routes=[Route("/oauth/callback", endpoint)])
+    client = TestClient(app, raise_server_exceptions=False, follow_redirects=False)
+
+    captured = {}
+
+    def token_handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization")
+        captured["body"] = request.content.decode()
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "oidc_access",
+                "id_token": id_token,
+                "token_type": "Bearer",
+            },
+        )
+
+    with respx.mock:
+        respx.post(f"{ISSUER_URL}/token").mock(side_effect=token_handler)
+        response = client.get("/oauth/callback?code=oidc-code&state=valid-state")
+
+    assert response.status_code == 302
+    assert captured["authorization"] == "Basic bWNwLWNsaWVudC1pZDptY3AtY2xpZW50LXNlY3JldA=="
+    assert "client_id=" not in captured["body"]
+    assert "client_secret=" not in captured["body"]
+
+
 async def test_callback_unauthorized_email(provider, rsa_keys):
     from starlette.applications import Starlette
     from starlette.routing import Route
