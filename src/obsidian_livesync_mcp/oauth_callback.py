@@ -10,8 +10,7 @@ import logging
 import secrets
 import time
 from base64 import b64encode
-from urllib.parse import quote_plus
-from urllib.parse import urlencode
+from urllib.parse import quote_plus, urlencode
 
 import httpx
 import jwt
@@ -232,7 +231,10 @@ async def _validate_id_token(
     return None
 
 
-async def _fetch_userinfo(access_token: str | None, provider: OIDCDelegatingProvider) -> dict | None:
+async def _fetch_userinfo(
+    access_token: str | None,
+    provider: OIDCDelegatingProvider,
+) -> dict | None:
     if not access_token or not provider._userinfo_endpoint:
         return None
 
@@ -243,7 +245,11 @@ async def _fetch_userinfo(access_token: str | None, provider: OIDCDelegatingProv
                 headers={"Authorization": f"Bearer {access_token}"},
             )
         if response.status_code != 200:
-            logger.warning("UserInfo lookup failed: HTTP %d %s", response.status_code, response.text)
+            logger.warning(
+                "UserInfo lookup failed: HTTP %d %s",
+                response.status_code,
+                response.text,
+            )
             return None
         return response.json()
     except httpx.HTTPError:
