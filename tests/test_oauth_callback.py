@@ -3,6 +3,7 @@
 import time
 from base64 import b64decode
 from unittest.mock import AsyncMock
+from urllib.parse import unquote_plus
 
 import httpx
 import jwt
@@ -10,7 +11,6 @@ import pytest
 import respx
 from cryptography.hazmat.primitives.asymmetric import rsa
 from starlette.testclient import TestClient
-from urllib.parse import unquote_plus
 
 from obsidian_livesync_mcp.config import Config
 from obsidian_livesync_mcp.oauth_callback import _validate_id_token, handle_oauth_callback

@@ -1175,9 +1175,7 @@ async def test_list_notes_excludes_soft_deleted(client):
     """Notes with LiveSync's ``deleted: True`` flag are hidden from list_notes."""
     docs = [
         _make_parent_doc("notes/alive.md", ["h:c1"], path="Notes/alive.md", mtime=3000),
-        _make_parent_doc(
-            "notes/dead.md", ["h:c2"], path="Notes/dead.md", mtime=2000, deleted=True
-        ),
+        _make_parent_doc("notes/dead.md", ["h:c2"], path="Notes/dead.md", mtime=2000, deleted=True),
     ]
     _mock_get_all_file_docs(docs)
 
