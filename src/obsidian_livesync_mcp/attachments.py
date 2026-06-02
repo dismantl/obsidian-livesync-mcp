@@ -76,7 +76,7 @@ class AttachmentOps:
         for doc in all_docs:
             if doc.get("type") == "newnote":
                 continue
-            content = await self._read_note_content(doc)
+            content = await self._read_text_doc_content(doc)
             if not content:
                 continue
             refs = extract_attachment_refs(content)
@@ -104,7 +104,7 @@ class AttachmentOps:
 
         referenced: set[str] = set()
         for doc in notes:
-            content = await self._read_note_content(doc)
+            content = await self._read_text_doc_content(doc)
             if not content:
                 continue
             referenced.update(ref_basename(ref) for ref in extract_attachment_refs(content))
@@ -160,14 +160,13 @@ class AttachmentOps:
             "type": "newnote",
             "eden": {},
         }
+        replaced_target_children = set(existing_new.get("children", [])) if existing_new else set()
         if existing_new:
             new_doc["_id"] = existing_new["_id"]
             new_doc["_rev"] = existing_new["_rev"]
 
         resp = await client.put(f"/{encode_doc_id(new_doc['_id'])}", json=new_doc)
         resp.raise_for_status()
-
-        await self.delete_note(old_path, hard=False)
 
         notes_updated: list[str] = []
         links_rewritten = 0
@@ -176,7 +175,7 @@ class AttachmentOps:
             for doc in all_docs:
                 if doc.get("type") == "newnote":
                     continue
-                content = await self._read_note_content(doc)
+                content = await self._read_text_doc_content(doc)
                 if not content:
                     continue
                 new_content, count = rewrite_attachment_refs(content, old_path, new_vault_path)
@@ -185,6 +184,15 @@ class AttachmentOps:
                     await self.write_note(note_path, new_content)
                     notes_updated.append(note_path)
                     links_rewritten += count
+
+        await self.delete_note(old_path, hard=False)
+
+        replaced = replaced_target_children - set(new_doc.get("children", []))
+        if replaced:
+            in_use_elsewhere = await self._collect_chunks_in_use_by_other_docs(new_doc["_id"])
+            orphaned = replaced - in_use_elsewhere
+            if orphaned:
+                await self._delete_orphan_chunks(list(orphaned))
 
         return {
             "moved": True,
@@ -211,3 +219,9 @@ class AttachmentOps:
             if any(ref in line for ref in refs):
                 return line.strip()
         return ""
+
+    async def _read_text_doc_content(self, doc: dict) -> str | None:
+        if doc.get("type") == "notes":
+            data = doc.get("data", "")
+            return "".join(data) if isinstance(data, list) else str(data)
+        return await self._read_note_content(doc)

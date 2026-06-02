@@ -182,19 +182,28 @@ def _split_wikilink_ref(ref: str) -> tuple[str, str]:
     return ref[:first_suffix], ref[first_suffix:]
 
 
+def _split_target_fragment(target: str) -> tuple[str, str]:
+    hash_pos = target.find("#")
+    if hash_pos == -1:
+        return target, ""
+    return target[:hash_pos], target[hash_pos:]
+
+
 def ref_basename(ref: str) -> str:
     """Return a case-folded basename for a link target."""
     target, _, _ = _split_markdown_ref(ref)
     target, _ = _split_wikilink_ref(target)
+    target, _ = _split_target_fragment(target)
     target = urllib.parse.unquote(target.strip())
     return target.rsplit("/", 1)[-1].lower()
 
 
 def _replacement_path(original_target: str, new_path: str) -> str:
     target = urllib.parse.unquote(original_target.strip().strip("<>"))
+    target, fragment = _split_target_fragment(target)
     if "/" in target:
-        return new_path.lstrip("/")
-    return new_path.rsplit("/", 1)[-1]
+        return new_path.lstrip("/") + fragment
+    return new_path.rsplit("/", 1)[-1] + fragment
 
 
 def rewrite_attachment_refs(content: str, old_path: str, new_path: str) -> tuple[str, int]:

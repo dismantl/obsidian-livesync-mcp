@@ -31,6 +31,8 @@ class _MemoryAttachmentClient(AttachmentOps):
         self.docs = {doc["path"].lower(): dict(doc) for doc in docs or []}
         self.raw = raw or {}
         self.deleted = []
+        self.deleted_chunks = []
+        self.fail_writes = set()
         self.writes = []
         self.put_docs = []
 
@@ -51,6 +53,17 @@ class _MemoryAttachmentClient(AttachmentOps):
 
     async def _reassemble_binary(self, doc, chunks=None):
         return self.raw.get(doc["path"], b"")
+
+    async def _collect_chunks_in_use_by_other_docs(self, exclude_doc_id: str):
+        in_use = set()
+        for doc in self.docs.values():
+            if doc.get("_id") == exclude_doc_id:
+                continue
+            in_use.update(doc.get("children", []))
+        return in_use
+
+    async def _delete_orphan_chunks(self, chunk_ids):
+        self.deleted_chunks.extend(chunk_ids)
 
     async def read_note(self, path: str):
         doc = await self._get_doc(path)
@@ -88,6 +101,8 @@ class _MemoryAttachmentClient(AttachmentOps):
         return True
 
     async def write_note(self, path: str, content: str, is_binary: bool = False):
+        if path in self.fail_writes:
+            raise ValueError(f"write failed: {path}")
         self.writes.append((path, content, is_binary))
         doc = self.docs[path.lstrip("/").lower()]
         doc["content"] = content
@@ -182,6 +197,19 @@ async def test_find_attachment_embeds_matches_basename_refs():
     assert "photo.png" in results[0].context
 
 
+async def test_find_attachment_embeds_includes_legacy_notes_docs():
+    client = _MemoryAttachmentClient(
+        [
+            _doc("Attachments/photo.png", "newnote"),
+            _doc("Notes/legacy.md", "notes", data=["Here ![[photo.png]]"]),
+        ]
+    )
+
+    results = await client.find_attachment_embeds("Attachments/photo.png")
+
+    assert [r.source_path for r in results] == ["Notes/legacy.md"]
+
+
 async def test_find_orphan_attachments():
     client = _MemoryAttachmentClient(
         [
@@ -250,6 +278,40 @@ async def test_move_attachment_reuses_chunks_and_rewrites_links():
     assert client.docs["media/new.png"]["children"] == ["h:img"]
     assert client.docs["notes/a.md"]["content"] == "before ![[new.png|120]] after"
     assert client.docs["notes/b.md"]["content"] == "![cap](Media/new.png)"
+
+
+async def test_move_attachment_rewrite_failure_keeps_source_live():
+    client = _MemoryAttachmentClient(
+        [
+            _doc("Attachments/old.png", "newnote", children=["h:img"]),
+            _doc("Notes/a.md", content="![[old.png]]"),
+        ]
+    )
+    client.fail_writes.add("Notes/a.md")
+
+    with pytest.raises(ValueError, match="write failed"):
+        await client.move_attachment("Attachments/old.png", "Media/new.png")
+
+    assert not client.docs["attachments/old.png"].get("deleted")
+
+
+async def test_move_attachment_replacing_soft_deleted_target_cleans_stale_chunks():
+    client = _MemoryAttachmentClient(
+        [
+            _doc("Attachments/old.png", "newnote", children=["h:new"]),
+            _doc(
+                "Media/new.png",
+                "newnote",
+                children=["h:stale"],
+                deleted=True,
+            ),
+        ]
+    )
+
+    await client.move_attachment("Attachments/old.png", "Media/new.png")
+
+    assert client.docs["media/new.png"]["children"] == ["h:new"]
+    assert client.deleted_chunks == ["h:stale"]
 
 
 async def test_move_attachment_rejects_existing_target():

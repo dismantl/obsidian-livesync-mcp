@@ -305,6 +305,14 @@ def test_rewrite_attachment_refs_markdown():
     assert "![](new.png)" in new
 
 
+def test_rewrite_attachment_refs_markdown_preserves_fragment():
+    content = "[pdf](att/old.pdf#page=2) and ![](old.png#crop=10)"
+    new, count = rewrite_attachment_refs(content, "att/old.pdf", "media/new.pdf")
+    assert count == 1
+    assert "[pdf](media/new.pdf#page=2)" in new
+    assert "![](old.png#crop=10)" in new
+
+
 def test_rewrite_attachment_refs_leaves_external_markdown_urls():
     content = "![remote](https://example.com/old.png) and ![protocol](//example.com/old.png)"
     new, count = rewrite_attachment_refs(content, "att/old.png", "media/new.png")
