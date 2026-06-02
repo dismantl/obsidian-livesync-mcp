@@ -11,6 +11,13 @@ from obsidian_livesync_mcp.models import NoteContent
 
 
 class _Response:
+    def __init__(self, body=None, status_code=201):
+        self._body = body or {}
+        self.status_code = status_code
+
+    def json(self):
+        return self._body
+
     def raise_for_status(self):
         return None
 
@@ -21,11 +28,13 @@ class _PutClient:
 
     async def put(self, _url, json):
         path = json["path"].lstrip("/")
-        self.owner.docs[path.lower()] = dict(json)
-        self.owner.put_docs.append(json)
+        stored = dict(json)
+        stored["_rev"] = _next_rev(json.get("_rev"))
+        self.owner.docs[path.lower()] = stored
+        self.owner.put_docs.append(stored)
         if self.owner.after_put:
-            self.owner.after_put(json)
-        return _Response()
+            self.owner.after_put(stored)
+        return _Response({"ok": True, "id": stored["_id"], "rev": stored["_rev"]})
 
 
 class _MemoryAttachmentClient(AttachmentOps):
@@ -143,6 +152,16 @@ def _doc(path, doc_type="plain", **kwargs):
     }
     doc.update(kwargs)
     return doc
+
+
+def _next_rev(rev):
+    if not rev:
+        return "1-put"
+    try:
+        generation = int(str(rev).split("-", 1)[0])
+    except ValueError:
+        generation = 0
+    return f"{generation + 1}-put"
 
 
 def test_client_inherits_attachment_ops():
@@ -398,8 +417,12 @@ async def test_move_attachment_rollback_preserves_concurrent_note_edits():
             _doc("Notes/a.md", content="original ![[old.png]]"),
         ]
     )
+    guarded_delete = client._soft_delete_doc_if_current
 
     async def fail_after_concurrent_note_edit(path, expected_rev):
+        if path == "Media/new.png":
+            await guarded_delete(path, expected_rev)
+            return
         note = client.docs["notes/a.md"]
         note["_rev"] = "2-doc"
         note["content"] = "concurrent edit ![[new.png]]"
@@ -413,6 +436,61 @@ async def test_move_attachment_rollback_preserves_concurrent_note_edits():
     assert not client.docs["attachments/old.png"].get("deleted")
     assert "media/new.png" not in client.docs or client.docs["media/new.png"].get("deleted")
     assert client.docs["notes/a.md"]["content"] == "concurrent edit ![[old.png]]"
+
+
+async def test_move_attachment_rollback_preserves_concurrent_target_update():
+    client = _MemoryAttachmentClient(
+        [
+            _doc("Attachments/old.png", "newnote", children=["h:img"]),
+        ]
+    )
+    guarded_deletes = []
+
+    async def fail_after_concurrent_target_update(path, expected_rev):
+        guarded_deletes.append((path, expected_rev))
+        target = client.docs["media/new.png"]
+        target["_rev"] = "2-target"
+        target["children"] = ["h:other"]
+        target["size"] = 42
+        raise ValueError(f"delete failed: {path} {expected_rev}")
+
+    client._soft_delete_doc_if_current = fail_after_concurrent_target_update
+
+    with pytest.raises(ValueError, match="delete failed"):
+        await client.move_attachment("Attachments/old.png", "Media/new.png")
+
+    assert not client.docs["attachments/old.png"].get("deleted")
+    assert not client.docs["media/new.png"].get("deleted")
+    assert client.docs["media/new.png"]["children"] == ["h:other"]
+    assert client.docs["media/new.png"]["size"] == 42
+    assert ("Media/new.png", "1-put") in guarded_deletes
+
+
+async def test_move_attachment_rollback_preserves_concurrent_replaced_target_update():
+    client = _MemoryAttachmentClient(
+        [
+            _doc("Attachments/old.png", "newnote", children=["h:img"]),
+            _doc("Media/new.png", "newnote", children=["h:stale"], deleted=True),
+        ]
+    )
+
+    async def fail_after_concurrent_target_update(path, expected_rev):
+        target = client.docs["media/new.png"]
+        target["_rev"] = "3-target"
+        target["deleted"] = False
+        target["children"] = ["h:other"]
+        target["size"] = 42
+        raise ValueError(f"delete failed: {path} {expected_rev}")
+
+    client._soft_delete_doc_if_current = fail_after_concurrent_target_update
+
+    with pytest.raises(ValueError, match="delete failed"):
+        await client.move_attachment("Attachments/old.png", "Media/new.png")
+
+    assert not client.docs["attachments/old.png"].get("deleted")
+    assert not client.docs["media/new.png"].get("deleted")
+    assert client.docs["media/new.png"]["children"] == ["h:other"]
+    assert client.docs["media/new.png"]["size"] == 42
 
 
 async def test_move_attachment_replacing_soft_deleted_target_cleans_stale_chunks():

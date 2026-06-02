@@ -208,6 +208,7 @@ class AttachmentOps:
         source_rev = old_doc.get("_rev")
         resp = await client.put(f"/{encode_doc_id(new_doc['_id'])}", json=new_doc)
         resp.raise_for_status()
+        target_rev = _response_rev(resp)
 
         try:
             for note_path in note_paths:
@@ -224,6 +225,7 @@ class AttachmentOps:
                 old_path,
                 new_vault_path,
                 existing_new,
+                target_rev,
                 note_rollbacks,
                 notes_updated,
             )
@@ -248,6 +250,7 @@ class AttachmentOps:
         old_path: str,
         new_path: str,
         existing_target: dict | None,
+        target_rev: str | None,
         note_rollbacks: dict[str, tuple[str, str]],
         notes_updated: list[str],
     ) -> None:
@@ -267,10 +270,12 @@ class AttachmentOps:
                 )
 
         try:
+            if not target_rev:
+                raise ValueError(f"Cannot safely roll back target without revision: {new_path}")
             if existing_target:
-                await self._restore_file_doc(new_path, existing_target)
+                await self._restore_file_doc(new_path, existing_target, expected_rev=target_rev)
             else:
-                await self.delete_note(new_path, hard=False)
+                await self._soft_delete_doc_if_current(new_path, target_rev)
         except Exception:
             logger.warning(
                 "Failed to restore target %s while rolling back attachment move",
@@ -309,9 +314,16 @@ class AttachmentOps:
             expected_rev=expected_rev,
         )
 
-    async def _restore_file_doc(self, path: str, previous_doc: dict) -> None:
+    async def _restore_file_doc(
+        self,
+        path: str,
+        previous_doc: dict,
+        expected_rev: str | None = None,
+    ) -> None:
         client = await self._get_client()
         current = await self._get_doc(path)
+        if expected_rev and (not current or current.get("_rev") != expected_rev):
+            raise ValueError(f"Target changed during move rollback: {path}")
         restored = dict(previous_doc)
         if current and current.get("_rev"):
             restored["_rev"] = current["_rev"]
@@ -384,3 +396,12 @@ class AttachmentOps:
 
 def _is_livesync_plain_text_path(path: str) -> bool:
     return path.lower().endswith(tuple(_LIVESYNC_PLAIN_TEXT_EXTENSIONS))
+
+
+def _response_rev(resp) -> str | None:
+    try:
+        body = resp.json()
+    except Exception:
+        return None
+    rev = body.get("rev") if isinstance(body, dict) else None
+    return rev if isinstance(rev, str) else None
