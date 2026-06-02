@@ -196,7 +196,7 @@ docker run -p 8080:8080 \
 | `get_backlinks` | Find notes that link to a given note |
 | `get_outbound_links` | List wikilinks from a note |
 | `add_attachment` | Add or replace a binary attachment from base64 bytes |
-| `add_attachment_from_file` | Add or replace a binary attachment from a local file path |
+| `add_attachment_from_file` | Add or replace a binary attachment from a local file path (stdio transport only) |
 | `get_attachment` | Download an attachment as base64, with a 10 MB default size guard |
 | `list_attachments` | List binary attachments with metadata |
 | `remove_attachment` | Remove an attachment, blocking referenced files unless forced |
@@ -206,7 +206,7 @@ docker run -p 8080:8080 \
 
 ### Attachments
 
-Attachment tools treat binary files as LiveSync `type="newnote"` parent documents. For local files, MCP clients should prefer `add_attachment_from_file` so the server reads bytes from a filesystem path instead of making the model pass large base64 strings through tool arguments. `add_attachment` and `get_attachment` still use base64 for programmatic upload/download. The CLI uses real local files for upload/download. LiveSync plain-text file types (`.md`, `.txt`, `.svg`, `.html`, `.csv`, `.css`, `.js`, `.xml`, `.canvas`) should be managed with the note/text APIs instead of attachment upload tools.
+Attachment tools treat binary files as LiveSync `type="newnote"` parent documents. For local files over stdio, MCP clients should prefer `add_attachment_from_file` so the server reads bytes from a filesystem path instead of making the model pass large base64 strings through tool arguments. Network transports do not expose `add_attachment_from_file`; remote clients should use `add_attachment` with base64 or the CLI. `add_attachment` and `get_attachment` use base64 for programmatic upload/download. The CLI uses real local files for upload/download. LiveSync plain-text file types (`.md`, `.txt`, `.svg`, `.html`, `.csv`, `.css`, `.js`, `.xml`, `.canvas`) should be managed with the note/text APIs instead of attachment upload tools.
 
 Reference discovery matches by case-insensitive basename, the same limitation as the existing backlink scan. Link rewriting preserves basename-only references, but explicit path references must match the moved attachment path so duplicates in other folders are not rewritten. If two folders contain attachments with the same filename, embed/orphan results are ambiguous.
 

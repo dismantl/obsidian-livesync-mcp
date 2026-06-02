@@ -194,7 +194,7 @@ class TestStreamableHttpASGI:
         assert body["result"]["serverInfo"]["name"] == "obsidian-livesync-mcp"
 
     def test_app_lists_registered_tools(self, http_server_module):
-        """All 20 MCP tools should be visible through the ASGI app."""
+        """Network transports should expose only network-safe MCP tools."""
         app = http_server_module.mcp.streamable_http_app()
         with TestClient(app) as client:
             # Initialize first (required by protocol)
@@ -218,7 +218,6 @@ class TestStreamableHttpASGI:
             "get_outbound_links",
             "list_folders",
             "add_attachment",
-            "add_attachment_from_file",
             "get_attachment",
             "list_attachments",
             "remove_attachment",

@@ -382,7 +382,6 @@ async def add_attachment(path: str, data_base64: str) -> str:
     return f"Added attachment: {path} ({len(data)} bytes)"
 
 
-@mcp.tool()
 @_tool_error_handler
 async def add_attachment_from_file(path: str, file_path: str) -> str:
     """Add or replace a binary attachment from a local file on the MCP server.
@@ -399,6 +398,10 @@ async def add_attachment_from_file(path: str, file_path: str) -> str:
     client = _get_client()
     await client.write_attachment(path, data)
     return f"Added attachment: {path} ({len(data)} bytes) from {file_path}"
+
+
+if _transport == "stdio":
+    add_attachment_from_file = mcp.tool()(add_attachment_from_file)
 
 
 @mcp.tool()
