@@ -272,14 +272,20 @@ async def test_get_attachment_tool_size_guard():
     from unittest.mock import AsyncMock, patch
 
     import obsidian_livesync_mcp.server as srv
-    from obsidian_livesync_mcp.models import AttachmentContent
+    from obsidian_livesync_mcp.models import AttachmentMetadata
 
     fake = AsyncMock()
-    fake.read_attachment.return_value = AttachmentContent(
-        path="img/a.png", data=b"x" * 100, size=100, content_type="image/png"
+    fake.get_attachment_metadata.return_value = AttachmentMetadata(
+        path="img/a.png",
+        size=100,
+        ctime=1,
+        mtime=2,
+        extension="png",
+        chunk_count=1,
     )
     with patch.object(srv, "_get_client", return_value=fake):
         result = await srv.get_attachment("img/a.png", max_bytes=10)
 
+    fake.read_attachment.assert_not_awaited()
     assert "max_bytes" in result
     assert "image/png" in result

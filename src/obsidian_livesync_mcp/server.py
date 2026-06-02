@@ -391,8 +391,19 @@ async def get_attachment(path: str, max_bytes: int = 10_485_760) -> str:
         max_bytes: Refuse to return attachments larger than this (default 10MB)
     """
     import base64
+    import mimetypes
 
     client = _get_client()
+    metadata = await client.get_attachment_metadata(path)
+    if metadata is None:
+        return f"Attachment not found: {path}"
+    if metadata.size > max_bytes:
+        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        return (
+            f"Attachment {path} is {metadata.size} bytes (> max_bytes={max_bytes}). "
+            f"content_type={content_type}. Increase max_bytes to fetch it."
+        )
+
     att = await client.read_attachment(path)
     if att is None:
         return f"Attachment not found: {path}"

@@ -1,5 +1,6 @@
 """Attachment operations for binary LiveSync file docs."""
 
+import base64
 import logging
 import mimetypes
 import time
@@ -24,20 +25,29 @@ class AttachmentOps:
 
     async def read_attachment(self, path: str) -> AttachmentContent | None:
         """Read a binary attachment as bytes."""
+        note = await self.read_note(path)
+        if note is None:
+            return None
+        if not note.is_binary:
+            raise ValueError(f"Not a binary attachment: {path}")
+
+        data = base64.b64decode(note.content)
+        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        return AttachmentContent(
+            path=note.path,
+            data=data,
+            size=len(data),
+            content_type=content_type,
+        )
+
+    async def get_attachment_metadata(self, path: str) -> AttachmentMetadata | None:
+        """Read attachment metadata without fetching chunk bytes."""
         doc = await self._get_doc(path)
         if not doc or doc.get("deleted"):
             return None
         if doc.get("type") != "newnote":
             raise ValueError(f"Not a binary attachment: {path}")
-
-        data = await self._reassemble_binary(doc)
-        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
-        return AttachmentContent(
-            path=doc.get("path", path),
-            data=data,
-            size=len(data),
-            content_type=content_type,
-        )
+        return self._attachment_metadata(doc)
 
     async def list_attachments(
         self, folder: str | None = None, limit: int = 100, skip: int = 0

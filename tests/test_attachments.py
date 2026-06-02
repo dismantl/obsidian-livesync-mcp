@@ -7,6 +7,7 @@ import pytest
 from obsidian_livesync_mcp.attachments import AttachmentOps
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 from obsidian_livesync_mcp.config import Config
+from obsidian_livesync_mcp.models import NoteContent
 
 
 class _Response:
@@ -50,6 +51,26 @@ class _MemoryAttachmentClient(AttachmentOps):
 
     async def _reassemble_binary(self, doc, chunks=None):
         return self.raw.get(doc["path"], b"")
+
+    async def read_note(self, path: str):
+        doc = await self._get_doc(path)
+        if not doc or doc.get("deleted"):
+            return None
+        if doc.get("type") == "newnote":
+            raw = await self._reassemble_binary(doc)
+            return NoteContent(
+                path=doc.get("path", path),
+                content=base64.b64encode(raw).decode("ascii"),
+                size=len(raw),
+                is_binary=True,
+            )
+        content = doc.get("content", "")
+        return NoteContent(
+            path=doc.get("path", path),
+            content=content,
+            size=doc.get("size", len(content.encode("utf-8"))),
+            is_binary=False,
+        )
 
     async def _write_file_doc(self, path: str, raw: bytes, is_text: bool):
         vault_path = path.lstrip("/")

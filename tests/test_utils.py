@@ -260,6 +260,15 @@ def test_extract_attachment_refs_markdown_embed():
     assert "doc.pdf" in refs
 
 
+def test_extract_attachment_refs_ignores_external_markdown_urls():
+    content = (
+        "![remote](https://example.com/old.png) "
+        "![protocol](//example.com/old.png) "
+        "[mail](mailto:old.png@example.com)"
+    )
+    assert extract_attachment_refs(content) == []
+
+
 def test_extract_attachment_refs_dedup():
     content = "![[x.png]] again ![[x.png]]"
     assert extract_attachment_refs(content).count("x.png") == 1
@@ -294,6 +303,13 @@ def test_rewrite_attachment_refs_markdown():
     assert count == 2
     assert "![cap](media/new.png)" in new
     assert "![](new.png)" in new
+
+
+def test_rewrite_attachment_refs_leaves_external_markdown_urls():
+    content = "![remote](https://example.com/old.png) and ![protocol](//example.com/old.png)"
+    new, count = rewrite_attachment_refs(content, "att/old.png", "media/new.png")
+    assert count == 0
+    assert new == content
 
 
 def test_rewrite_attachment_refs_no_match_unchanged():

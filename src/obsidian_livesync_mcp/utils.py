@@ -134,6 +134,14 @@ def extract_wikilinks(content: str) -> list[str]:
     return result
 
 
+def _is_vault_ref(target: str) -> bool:
+    target = target.strip()
+    if not target or target.startswith("#"):
+        return False
+    parsed = urllib.parse.urlsplit(target)
+    return not parsed.scheme and not parsed.netloc
+
+
 def extract_attachment_refs(content: str) -> list[str]:
     """Extract attachment-style references from wikilinks and Markdown links."""
     seen: set[str] = set()
@@ -145,7 +153,8 @@ def extract_attachment_refs(content: str) -> list[str]:
             result.append(target)
     for match in _ATTACHMENT_MARKDOWN_RE.finditer(content):
         target = match.group("target").strip()
-        if target and target not in seen:
+        split_target, _, _ = _split_markdown_ref(target)
+        if _is_vault_ref(split_target) and target and target not in seen:
             seen.add(target)
             result.append(target)
     return result
@@ -213,7 +222,7 @@ def rewrite_attachment_refs(content: str, old_path: str, new_path: str) -> tuple
         nonlocal count
         raw_target = match.group("target")
         target, suffix, angled = _split_markdown_ref(raw_target)
-        if ref_basename(target) != old_base:
+        if not _is_vault_ref(target) or ref_basename(target) != old_base:
             return match.group(0)
         count += 1
         replacement = _replacement_path(target, new_path)

@@ -258,6 +258,40 @@ async def test_read_note_binary_retries_transient_missing_chunk(client):
 
 
 @respx.mock
+async def test_read_attachment_retries_transient_missing_chunk(client):
+    import base64 as _b64
+
+    stale_doc = _make_parent_doc("img/photo.png", ["h:old"], type="newnote", size=3)
+    fresh_doc = _make_parent_doc("img/photo.png", ["h:new"], type="newnote", size=3)
+    respx.get(f"{BASE}/img%2Fphoto.png").mock(
+        side_effect=[
+            Response(200, json=stale_doc),
+            Response(200, json=fresh_doc),
+        ]
+    )
+    respx.post(f"{BASE}/_all_docs").mock(
+        side_effect=[
+            Response(200, json={"rows": []}),
+            Response(
+                200,
+                json={
+                    "rows": [
+                        {
+                            "id": "h:new",
+                            "doc": {"data": _b64.b64encode(b"new").decode("ascii")},
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+
+    result = await client.read_attachment("img/photo.png")
+    assert result is not None
+    assert result.data == b"new"
+
+
+@respx.mock
 async def test_reassemble_binary_raises_on_missing_chunk(client):
     doc = _make_parent_doc("img/x.png", ["h:present", "h:gone"], type="newnote")
     _mock_all_docs({"h:present": "AAA="})
