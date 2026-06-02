@@ -51,6 +51,30 @@ def test_binary_chunks_are_base64():
     assert reassembled == data
 
 
+def test_decode_binary_chunks_roundtrip_single():
+    from obsidian_livesync_mcp.chunking import decode_binary_chunks
+
+    data = bytes(range(256))
+    chunks = split_chunks(data, is_text=False)
+    assert decode_binary_chunks(chunks) == data
+
+
+def test_decode_binary_chunks_roundtrip_multichunk():
+    """Multi-chunk binary must round-trip byte-for-byte."""
+    from obsidian_livesync_mcp.chunking import decode_binary_chunks
+
+    data = bytes((i * 37 + (i >> 3)) & 0xFF for i in range(50000))
+    chunks = split_chunks(data, is_text=False)
+    assert len(chunks) > 1
+    assert decode_binary_chunks(chunks) == data
+
+
+def test_decode_binary_chunks_empty():
+    from obsidian_livesync_mcp.chunking import decode_binary_chunks
+
+    assert decode_binary_chunks([]) == b""
+
+
 def test_utf8_boundary_safety():
     """Should not split in the middle of a multi-byte UTF-8 character."""
     # 4-byte UTF-8: emoji 👋 = F0 9F 91 8B

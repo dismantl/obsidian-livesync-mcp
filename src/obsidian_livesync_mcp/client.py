@@ -1,13 +1,14 @@
 """Async CouchDB client for Obsidian vault operations."""
 
 import asyncio
+import base64
 import logging
 import time
 from collections import defaultdict
 
 import httpx
 
-from .chunking import split_chunks
+from .chunking import decode_binary_chunks, split_chunks
 from .config import Config
 from .models import BacklinkInfo, FolderInfo, NoteContent, NoteMetadata, SearchResult
 from .utils import (
@@ -114,6 +115,18 @@ class ObsidianVaultClient:
             if doc and "data" in doc:
                 result[row["id"]] = doc["data"]
         return result
+
+    async def _reassemble_binary(self, doc: dict, chunks: dict[str, str] | None = None) -> bytes:
+        """Fetch and reassemble a binary doc's original bytes."""
+        chunk_ids = doc.get("children", [])
+        if not chunk_ids:
+            return b""
+        chunks = chunks if chunks is not None else await self._fetch_chunks(chunk_ids)
+        missing = [cid for cid in chunk_ids if cid not in chunks]
+        if missing:
+            doc_id = doc.get("_id", "unknown")
+            raise ValueError(f"Missing {len(missing)} chunk(s) for {doc_id}: {missing[:3]}")
+        return decode_binary_chunks([chunks[cid] for cid in chunk_ids])
 
     async def _delete_orphan_chunks(self, chunk_ids: list[str]) -> None:
         """Delete orphaned chunk documents. Best-effort: logs warnings on failure."""
@@ -273,12 +286,18 @@ class ObsidianVaultClient:
                     if attempt < retries:
                         await asyncio.sleep(retry_delay)
                     continue
-                content = "".join(chunks[cid] for cid in chunk_ids)
+                if is_binary:
+                    raw = await self._reassemble_binary(doc, chunks)
+                    content = base64.b64encode(raw).decode("ascii")
+                    size = len(raw)
+                else:
+                    content = "".join(chunks[cid] for cid in chunk_ids)
+                    size = doc.get("size", 0)
 
             return NoteContent(
                 path=doc.get("path", path),
                 content=content,
-                size=doc.get("size", 0),
+                size=size if is_binary else doc.get("size", 0),
                 is_binary=is_binary,
             )
 
@@ -306,23 +325,21 @@ class ObsidianVaultClient:
 
     # ── Write operations ───────────────────────────────────────────
 
-    async def write_note(self, path: str, content: str, is_binary: bool = False) -> bool:
+    async def write_note(self, path: str, content: str | bytes, is_binary: bool = False) -> bool:
         """Create or update a note. Returns True on success."""
+        raw = content.encode("utf-8") if isinstance(content, str) else bytes(content)
+        return await self._write_file_doc(path, raw, is_text=not is_binary)
+
+    async def _write_file_doc(self, path: str, raw: bytes, is_text: bool) -> bool:
+        """Create/update a file doc from raw bytes using LiveSync chunk docs."""
         client = await self._get_client()
         vault_path = path.lstrip("/")
         doc_id = self._doc_id(vault_path)
         encoded_id = encode_doc_id(doc_id)
 
-        # Prepare chunks using Rabin-Karp content-defined splitting
-        if is_binary:
-            raw = content.encode("utf-8") if isinstance(content, str) else content
-            file_size = len(raw)
-            doc_type = "newnote"
-            chunks_data = split_chunks(raw, is_text=False)
-        else:
-            file_size = len(content.encode("utf-8"))
-            doc_type = "plain"
-            chunks_data = split_chunks(content.encode("utf-8"), is_text=True)
+        file_size = len(raw)
+        doc_type = "plain" if is_text else "newnote"
+        chunks_data = split_chunks(raw, is_text=is_text)
 
         # Create chunk docs with content-hash IDs
         chunk_ids = []

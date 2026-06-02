@@ -199,6 +199,93 @@ async def test_read_note_binary(client):
 
     result = await client.read_note("img/photo.png")
     assert result.is_binary is True
+    assert result.content == "aGVsbG8="
+
+
+@respx.mock
+async def test_read_note_binary_roundtrips_multichunk(client):
+    """Binary read returns base64 for the whole file, not concatenated chunk base64."""
+    import base64 as _b64
+
+    raw = bytes((i * 53) & 0xFF for i in range(20))
+    part_a, part_b = raw[:7], raw[7:]
+    chunk_a = _b64.b64encode(part_a).decode("ascii")
+    chunk_b = _b64.b64encode(part_b).decode("ascii")
+
+    doc = _make_parent_doc("img/photo.png", ["h:bin_a", "h:bin_b"], type="newnote", size=len(raw))
+    _mock_get_doc("img%2Fphoto.png", doc)
+    _mock_all_docs({"h:bin_a": chunk_a, "h:bin_b": chunk_b})
+
+    result = await client.read_note("img/photo.png")
+    assert result is not None
+    assert result.is_binary is True
+    assert _b64.b64decode(result.content) == raw
+    assert result.size == len(raw)
+
+
+@respx.mock
+async def test_read_note_binary_retries_transient_missing_chunk(client):
+    import base64 as _b64
+
+    stale_doc = _make_parent_doc("img/photo.png", ["h:old"], type="newnote", size=3)
+    fresh_doc = _make_parent_doc("img/photo.png", ["h:new"], type="newnote", size=3)
+    respx.get(f"{BASE}/img%2Fphoto.png").mock(
+        side_effect=[
+            Response(200, json=stale_doc),
+            Response(200, json=fresh_doc),
+        ]
+    )
+    respx.post(f"{BASE}/_all_docs").mock(
+        side_effect=[
+            Response(200, json={"rows": []}),
+            Response(
+                200,
+                json={
+                    "rows": [
+                        {
+                            "id": "h:new",
+                            "doc": {"data": _b64.b64encode(b"new").decode("ascii")},
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+
+    result = await client.read_note("img/photo.png", retry_delay=0.0)
+    assert result is not None
+    assert _b64.b64decode(result.content) == b"new"
+
+
+@respx.mock
+async def test_reassemble_binary_raises_on_missing_chunk(client):
+    doc = _make_parent_doc("img/x.png", ["h:present", "h:gone"], type="newnote")
+    _mock_all_docs({"h:present": "AAA="})
+
+    with pytest.raises(ValueError, match="Missing 1 chunk"):
+        await client._reassemble_binary(doc)
+
+
+def test_attachment_content_to_dict_base64():
+    from obsidian_livesync_mcp.models import AttachmentContent
+
+    att = AttachmentContent(path="img/x.png", data=b"hello", size=5, content_type="image/png")
+    d = att.to_dict()
+    assert d["data_base64"] == "aGVsbG8="
+    assert d["content_type"] == "image/png"
+    assert d["size"] == 5
+    assert d["path"] == "img/x.png"
+
+
+def test_attachment_metadata_to_dict():
+    from obsidian_livesync_mcp.models import AttachmentMetadata
+
+    meta = AttachmentMetadata(
+        path="img/x.png", size=10, ctime=1, mtime=2, extension="png", chunk_count=3
+    )
+    d = meta.to_dict()
+    assert d["extension"] == "png"
+    assert d["chunks"] == 3
 
 
 # ── write_note ────────────────────────────────────────────────────

@@ -123,3 +123,13 @@ def split_chunks(
             chunks.append(base64.b64encode(chunk_bytes).decode("ascii"))
 
     return chunks
+
+
+def decode_binary_chunks(chunks: list[str]) -> bytes:
+    """Reassemble binary file bytes from base64-encoded chunks.
+
+    LiveSync base64-encodes each binary byte range independently. Decode each
+    chunk first, then concatenate bytes; concatenating base64 strings corrupts
+    multi-chunk files when a chunk length is not a multiple of 3.
+    """
+    return b"".join(base64.b64decode(chunk) for chunk in chunks)

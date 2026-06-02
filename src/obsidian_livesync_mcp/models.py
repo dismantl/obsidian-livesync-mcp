@@ -1,5 +1,6 @@
 """Data models for vault operations."""
 
+import base64
 from dataclasses import dataclass, field
 
 
@@ -36,6 +37,42 @@ class NoteContent:
             "content": self.content,
             "size": self.size,
             "is_binary": self.is_binary,
+        }
+
+
+@dataclass
+class AttachmentMetadata:
+    path: str
+    size: int
+    ctime: int  # milliseconds
+    mtime: int  # milliseconds
+    extension: str
+    chunk_count: int
+
+    def to_dict(self) -> dict:
+        return {
+            "path": self.path,
+            "size": self.size,
+            "ctime": self.ctime,
+            "mtime": self.mtime,
+            "extension": self.extension,
+            "chunks": self.chunk_count,
+        }
+
+
+@dataclass
+class AttachmentContent:
+    path: str
+    data: bytes
+    size: int
+    content_type: str
+
+    def to_dict(self) -> dict:
+        return {
+            "path": self.path,
+            "data_base64": base64.b64encode(self.data).decode("ascii"),
+            "size": self.size,
+            "content_type": self.content_type,
         }
 
 
