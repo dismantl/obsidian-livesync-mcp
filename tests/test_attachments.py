@@ -157,6 +157,19 @@ async def test_write_and_read_attachment_roundtrip():
     assert att.to_dict()["data_base64"] == base64.b64encode(b"hello").decode("ascii")
 
 
+@pytest.mark.parametrize(
+    "extension",
+    [".md", ".txt", ".svg", ".html", ".csv", ".css", ".js", ".xml", ".canvas"],
+)
+async def test_write_attachment_rejects_livesync_plain_text_paths(extension):
+    client = _MemoryAttachmentClient()
+
+    with pytest.raises(ValueError, match="plain-text LiveSync file"):
+        await client.write_attachment(f"Attachments/file{extension}", b"text")
+
+    assert client.docs == {}
+
+
 async def test_read_attachment_rejects_plain_note():
     client = _MemoryAttachmentClient([_doc("Notes/a.md", content="not binary")])
 

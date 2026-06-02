@@ -268,6 +268,26 @@ async def test_add_attachment_tool_rejects_bad_base64():
     assert "Invalid base64" in result
 
 
+async def test_add_attachment_tool_rejects_plain_text_livesync_path():
+    import base64
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+
+    fake = AsyncMock()
+    fake.write_attachment.side_effect = ValueError(
+        "add_attachment only supports binary attachments; use note tools for "
+        "plain-text LiveSync files such as .svg"
+    )
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.add_attachment(
+            "img/diagram.svg",
+            base64.b64encode(b"<svg/>").decode("ascii"),
+        )
+
+    assert result.startswith("Error: add_attachment only supports binary attachments")
+
+
 async def test_get_attachment_tool_size_guard():
     from unittest.mock import AsyncMock, patch
 

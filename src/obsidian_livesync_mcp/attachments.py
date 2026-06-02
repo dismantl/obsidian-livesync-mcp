@@ -15,12 +15,29 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+_LIVESYNC_PLAIN_TEXT_EXTENSIONS = {
+    ".md",
+    ".txt",
+    ".svg",
+    ".html",
+    ".csv",
+    ".css",
+    ".js",
+    ".xml",
+    ".canvas",
+}
+
 
 class AttachmentOps:
     """Mixin implementing binary attachment operations."""
 
     async def write_attachment(self, path: str, data: bytes) -> bool:
         """Create or replace a binary attachment."""
+        if _is_livesync_plain_text_path(path):
+            raise ValueError(
+                "add_attachment only supports binary attachments; use note tools "
+                "for plain-text LiveSync files such as .svg, .txt, and .canvas"
+            )
         return await self._write_file_doc(path, data, is_text=False)
 
     async def read_attachment(self, path: str) -> AttachmentContent | None:
@@ -276,3 +293,7 @@ class AttachmentOps:
             data = doc.get("data", "")
             return "".join(data) if isinstance(data, list) else str(data)
         return await self._read_note_content(doc)
+
+
+def _is_livesync_plain_text_path(path: str) -> bool:
+    return path.lower().endswith(tuple(_LIVESYNC_PLAIN_TEXT_EXTENSIONS))
