@@ -8,6 +8,7 @@ from collections import defaultdict
 
 import httpx
 
+from .attachments import AttachmentOps
 from .chunking import decode_binary_chunks, split_chunks
 from .config import Config
 from .models import BacklinkInfo, FolderInfo, NoteContent, NoteMetadata, SearchResult
@@ -46,7 +47,7 @@ READ_RETRIES = 3
 READ_RETRY_DELAY = 0.25
 
 
-class ObsidianVaultClient:
+class ObsidianVaultClient(AttachmentOps):
     """Async client for reading/writing Obsidian vault docs in CouchDB."""
 
     def __init__(self, config: Config | None = None):
