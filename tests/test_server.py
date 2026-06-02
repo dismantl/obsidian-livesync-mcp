@@ -218,6 +218,7 @@ class TestStreamableHttpASGI:
             "get_outbound_links",
             "list_folders",
             "add_attachment",
+            "add_attachment_from_file",
             "get_attachment",
             "list_attachments",
             "remove_attachment",
@@ -285,6 +286,58 @@ async def test_add_attachment_tool_rejects_plain_text_livesync_path():
             base64.b64encode(b"<svg/>").decode("ascii"),
         )
 
+    assert result.startswith("Error: add_attachment only supports binary attachments")
+
+
+async def test_add_attachment_from_file_tool_reads_local_file(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+
+    local_file = tmp_path / "photo.png"
+    local_file.write_bytes(b"png bytes")
+
+    fake = AsyncMock()
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.add_attachment_from_file("img/a.png", str(local_file))
+
+    fake.write_attachment.assert_awaited_once_with("img/a.png", b"png bytes")
+    assert "Added attachment: img/a.png" in result
+    assert str(local_file) in result
+
+
+async def test_add_attachment_from_file_tool_reports_read_errors(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+
+    fake = AsyncMock()
+    missing_file = tmp_path / "missing.png"
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.add_attachment_from_file("img/a.png", str(missing_file))
+
+    fake.write_attachment.assert_not_awaited()
+    assert result.startswith("Error reading local file:")
+    assert str(missing_file) in result
+
+
+async def test_add_attachment_from_file_tool_rejects_plain_text_livesync_path(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+
+    local_file = tmp_path / "diagram.svg"
+    local_file.write_bytes(b"<svg/>")
+
+    fake = AsyncMock()
+    fake.write_attachment.side_effect = ValueError(
+        "add_attachment only supports binary attachments; use note tools for "
+        "plain-text LiveSync files such as .svg"
+    )
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.add_attachment_from_file("img/diagram.svg", str(local_file))
+
+    fake.write_attachment.assert_awaited_once_with("img/diagram.svg", b"<svg/>")
     assert result.startswith("Error: add_attachment only supports binary attachments")
 
 

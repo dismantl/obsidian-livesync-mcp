@@ -4,6 +4,7 @@ import asyncio
 import functools
 import logging
 import os
+from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -379,6 +380,25 @@ async def add_attachment(path: str, data_base64: str) -> str:
     client = _get_client()
     await client.write_attachment(path, data)
     return f"Added attachment: {path} ({len(data)} bytes)"
+
+
+@mcp.tool()
+@_tool_error_handler
+async def add_attachment_from_file(path: str, file_path: str) -> str:
+    """Add or replace a binary attachment from a local file on the MCP server.
+
+    Args:
+        path: Vault path for the attachment (e.g. "Attachments/photo.png")
+        file_path: Local filesystem path readable by this MCP server
+    """
+    try:
+        data = Path(file_path).read_bytes()
+    except OSError as e:
+        return f"Error reading local file: {file_path}: {e}"
+
+    client = _get_client()
+    await client.write_attachment(path, data)
+    return f"Added attachment: {path} ({len(data)} bytes) from {file_path}"
 
 
 @mcp.tool()
