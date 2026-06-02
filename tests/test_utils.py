@@ -2,11 +2,14 @@
 
 from obsidian_livesync_mcp.utils import (
     encode_doc_id,
+    extract_attachment_refs,
     extract_frontmatter,
     extract_tags,
     extract_wikilinks,
     generate_chunk_id,
     normalize_doc_id,
+    ref_basename,
+    rewrite_attachment_refs,
     set_frontmatter,
 )
 
@@ -236,6 +239,125 @@ def test_extract_wikilinks_none():
 
 def test_extract_wikilinks_empty():
     assert extract_wikilinks("") == []
+
+
+# ── attachment references ────────────────────────────────────────
+
+
+def test_extract_attachment_refs_wikilink_embed():
+    content = "Here ![[photo.png]] and ![[dir/diagram.svg|200]] and ![[a.pdf#page=2]]"
+    refs = extract_attachment_refs(content)
+    assert "photo.png" in refs
+    assert "dir/diagram.svg|200" in refs
+    assert "a.pdf#page=2" in refs
+
+
+def test_extract_attachment_refs_markdown_embed():
+    content = "![alt](images/pic%20one.jpg) and ![](<my file.png>) and [link](doc.pdf)"
+    refs = extract_attachment_refs(content)
+    assert "images/pic%20one.jpg" in refs
+    assert "<my file.png>" in refs
+    assert "doc.pdf" in refs
+
+
+def test_extract_attachment_refs_markdown_parentheses_in_filename():
+    content = "![alt](images/image%20(1).png) and ![](<images/photo (final).jpg>)"
+    refs = extract_attachment_refs(content)
+    assert "images/image%20(1).png" in refs
+    assert "<images/photo (final).jpg>" in refs
+
+
+def test_extract_attachment_refs_ignores_external_markdown_urls():
+    content = (
+        "![remote](https://example.com/old.png) "
+        "![protocol](//example.com/old.png) "
+        "[mail](mailto:old.png@example.com)"
+    )
+    assert extract_attachment_refs(content) == []
+
+
+def test_extract_attachment_refs_dedup():
+    content = "![[x.png]] again ![[x.png]]"
+    assert extract_attachment_refs(content).count("x.png") == 1
+
+
+def test_ref_basename_normalizes():
+    assert ref_basename("dir/diagram.svg|200") == "diagram.svg"
+    assert ref_basename("a.pdf#page=2") == "a.pdf"
+    assert ref_basename("images/pic%20one.jpg") == "pic one.jpg"
+    assert ref_basename("<my file.png>") == "my file.png"
+    assert ref_basename('path/to/x.png "a title"') == "x.png"
+    assert ref_basename("PHOTO.PNG") == "photo.png"
+
+
+def test_rewrite_attachment_refs_wikilink_basename():
+    content = "before ![[old.png|120]] after"
+    new, count = rewrite_attachment_refs(content, "att/old.png", "att/new.png")
+    assert count == 1
+    assert "![[new.png|120]]" in new
+
+
+def test_rewrite_attachment_refs_wikilink_full_path():
+    content = "![[att/old.png]]"
+    new, count = rewrite_attachment_refs(content, "att/old.png", "media/new.png")
+    assert count == 1
+    assert "![[media/new.png]]" in new
+
+
+def test_rewrite_attachment_refs_wikilink_preserves_different_explicit_path():
+    content = "![[Attachments/old.png]] ![[Other/old.png]] ![[old.png]]"
+    new, count = rewrite_attachment_refs(content, "Attachments/old.png", "Media/new.png")
+    assert count == 2
+    assert "![[Media/new.png]]" in new
+    assert "![[Other/old.png]]" in new
+    assert "![[new.png]]" in new
+
+
+def test_rewrite_attachment_refs_markdown():
+    content = "![cap](att/old.png) and ![](old.png)"
+    new, count = rewrite_attachment_refs(content, "att/old.png", "media/new.png")
+    assert count == 2
+    assert "![cap](media/new.png)" in new
+    assert "![](new.png)" in new
+
+
+def test_rewrite_attachment_refs_markdown_preserves_different_explicit_path():
+    content = "![a](Attachments/old.png) ![b](Other/old.png) ![c](old.png)"
+    new, count = rewrite_attachment_refs(content, "Attachments/old.png", "Media/new.png")
+    assert count == 2
+    assert "![a](Media/new.png)" in new
+    assert "![b](Other/old.png)" in new
+    assert "![c](new.png)" in new
+
+
+def test_rewrite_attachment_refs_markdown_preserves_fragment():
+    content = "[pdf](att/old.pdf#page=2) and ![](old.png#crop=10)"
+    new, count = rewrite_attachment_refs(content, "att/old.pdf", "media/new.pdf")
+    assert count == 1
+    assert "[pdf](media/new.pdf#page=2)" in new
+    assert "![](old.png#crop=10)" in new
+
+
+def test_rewrite_attachment_refs_markdown_parentheses_in_filename():
+    content = "![alt](images/image%20(1).png) and ![](<images/image (1).png>)"
+    new, count = rewrite_attachment_refs(content, "images/image (1).png", "media/new.png")
+    assert count == 2
+    assert "![alt](media/new.png)" in new
+    assert "![](<media/new.png>)" in new
+
+
+def test_rewrite_attachment_refs_leaves_external_markdown_urls():
+    content = "![remote](https://example.com/old.png) and ![protocol](//example.com/old.png)"
+    new, count = rewrite_attachment_refs(content, "att/old.png", "media/new.png")
+    assert count == 0
+    assert new == content
+
+
+def test_rewrite_attachment_refs_no_match_unchanged():
+    content = "![[unrelated.png]]"
+    new, count = rewrite_attachment_refs(content, "att/old.png", "att/new.png")
+    assert count == 0
+    assert new == content
 
 
 # ── extract_tags ─────────────────────────────────────────────────

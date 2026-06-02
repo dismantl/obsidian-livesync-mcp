@@ -194,7 +194,7 @@ class TestStreamableHttpASGI:
         assert body["result"]["serverInfo"]["name"] == "obsidian-livesync-mcp"
 
     def test_app_lists_registered_tools(self, http_server_module):
-        """All 13 MCP tools should be visible through the ASGI app."""
+        """All 20 MCP tools should be visible through the ASGI app."""
         app = http_server_module.mcp.streamable_http_app()
         with TestClient(app) as client:
             # Initialize first (required by protocol)
@@ -217,6 +217,13 @@ class TestStreamableHttpASGI:
             "get_backlinks",
             "get_outbound_links",
             "list_folders",
+            "add_attachment",
+            "get_attachment",
+            "list_attachments",
+            "remove_attachment",
+            "find_attachment_embeds",
+            "find_orphan_attachments",
+            "move_attachment",
         }
         assert expected == tool_names
 
@@ -231,3 +238,74 @@ class TestStreamableHttpASGI:
         """Host/port from env vars should be on the settings (not passed to run)."""
         assert http_server_module.mcp.settings.host == "0.0.0.0"
         assert http_server_module.mcp.settings.port == 8080
+
+
+# ── Attachment tools ─────────────────────────────────────────────
+
+
+async def test_add_attachment_tool_decodes_base64():
+    import base64
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+
+    fake = AsyncMock()
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.add_attachment("img/a.png", base64.b64encode(b"hello").decode("ascii"))
+
+    fake.write_attachment.assert_awaited_once_with("img/a.png", b"hello")
+    assert "Added attachment: img/a.png" in result
+
+
+async def test_add_attachment_tool_rejects_bad_base64():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+
+    with patch.object(srv, "_get_client", return_value=AsyncMock()):
+        result = await srv.add_attachment("img/a.png", "not!base64!")
+
+    assert "Invalid base64" in result
+
+
+async def test_add_attachment_tool_rejects_plain_text_livesync_path():
+    import base64
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+
+    fake = AsyncMock()
+    fake.write_attachment.side_effect = ValueError(
+        "add_attachment only supports binary attachments; use note tools for "
+        "plain-text LiveSync files such as .svg"
+    )
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.add_attachment(
+            "img/diagram.svg",
+            base64.b64encode(b"<svg/>").decode("ascii"),
+        )
+
+    assert result.startswith("Error: add_attachment only supports binary attachments")
+
+
+async def test_get_attachment_tool_size_guard():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+    from obsidian_livesync_mcp.models import AttachmentMetadata
+
+    fake = AsyncMock()
+    fake.get_attachment_metadata.return_value = AttachmentMetadata(
+        path="img/a.png",
+        size=100,
+        ctime=1,
+        mtime=2,
+        extension="png",
+        chunk_count=1,
+    )
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.get_attachment("img/a.png", max_bytes=10)
+
+    fake.read_attachment.assert_not_awaited()
+    assert "max_bytes" in result
+    assert "image/png" in result
