@@ -360,6 +360,150 @@ async def list_folders() -> str:
     return f"Found {len(folders)} folders:\n" + "\n".join(lines)
 
 
+@mcp.tool()
+@_tool_error_handler
+async def add_attachment(path: str, data_base64: str) -> str:
+    """Add or replace a binary attachment in the vault.
+
+    Args:
+        path: Vault path for the attachment (e.g. "Attachments/photo.png")
+        data_base64: The file's bytes, base64-encoded
+    """
+    import base64
+    import binascii
+
+    try:
+        data = base64.b64decode(data_base64, validate=True)
+    except (binascii.Error, ValueError) as e:
+        return f"Invalid base64: {e}"
+    client = _get_client()
+    await client.write_attachment(path, data)
+    return f"Added attachment: {path} ({len(data)} bytes)"
+
+
+@mcp.tool()
+@_tool_error_handler
+async def get_attachment(path: str, max_bytes: int = 10_485_760) -> str:
+    """Download a binary attachment as base64.
+
+    Args:
+        path: Vault path to the attachment
+        max_bytes: Refuse to return attachments larger than this (default 10MB)
+    """
+    import base64
+
+    client = _get_client()
+    att = await client.read_attachment(path)
+    if att is None:
+        return f"Attachment not found: {path}"
+    if att.size > max_bytes:
+        return (
+            f"Attachment {path} is {att.size} bytes (> max_bytes={max_bytes}). "
+            f"content_type={att.content_type}. Increase max_bytes to fetch it."
+        )
+    data_base64 = base64.b64encode(att.data).decode("ascii")
+    return f"{path} ({att.size} bytes, {att.content_type})\nbase64:\n{data_base64}"
+
+
+@mcp.tool()
+@_tool_error_handler
+async def list_attachments(folder: str | None = None, limit: int = 100, skip: int = 0) -> str:
+    """List binary attachments in the vault.
+
+    Args:
+        folder: Optional folder path to filter
+        limit: Max attachments to return (default 100)
+        skip: Number to skip for pagination
+    """
+    client = _get_client()
+    attachments = await client.list_attachments(folder=folder, limit=limit, skip=skip)
+    if not attachments:
+        return "No attachments found."
+    lines = [f"{att.path}  ({att.size} bytes, .{att.extension})" for att in attachments]
+    return f"Found {len(attachments)} attachments:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+@_tool_error_handler
+async def remove_attachment(path: str, force: bool = False, hard: bool = False) -> str:
+    """Remove a binary attachment from the vault.
+
+    Soft-deletes by default. If notes still reference the attachment and force
+    is False, it is not deleted and referencing notes are listed.
+
+    Args:
+        path: Vault path to the attachment
+        force: Delete even if notes still reference it
+        hard: CouchDB hard-delete with chunk cleanup
+    """
+    client = _get_client()
+    result = await client.remove_attachment(path, hard=hard, force=force)
+    if not result["deleted"]:
+        refs = "\n".join(f"  {p}" for p in result["referenced_by"])
+        return (
+            f"Not deleted: {path} is still referenced by "
+            f"{len(result['referenced_by'])} note(s).\n{refs}\n"
+            f"Pass force=True to delete anyway."
+        )
+    return f"Removed attachment: {path}" + (" (hard)" if hard else "")
+
+
+@mcp.tool()
+@_tool_error_handler
+async def find_attachment_embeds(path: str) -> str:
+    """Find notes that embed or link to an attachment.
+
+    Args:
+        path: Vault path to the attachment
+    """
+    client = _get_client()
+    embeds = await client.find_attachment_embeds(path)
+    if not embeds:
+        return f"No notes reference: {path}"
+    lines = []
+    for embed in embeds:
+        ctx = f" - {embed.context}" if embed.context else ""
+        lines.append(f"  {embed.source_path}{ctx}")
+    return f"{len(embeds)} note(s) reference {path}:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+@_tool_error_handler
+async def find_orphan_attachments(folder: str | None = None) -> str:
+    """List attachments that no note embeds or links to.
+
+    Args:
+        folder: Optional folder path to restrict the scan
+    """
+    client = _get_client()
+    orphans = await client.find_orphan_attachments(folder=folder)
+    if not orphans:
+        return "No orphan attachments found."
+    lines = [f"{att.path}  ({att.size} bytes)" for att in orphans]
+    return f"Found {len(orphans)} orphan attachments:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+@_tool_error_handler
+async def move_attachment(old_path: str, new_path: str, rewrite_links: bool = True) -> str:
+    """Move/rename an attachment and rewrite references in notes.
+
+    Args:
+        old_path: Current vault path
+        new_path: New vault path
+        rewrite_links: Rewrite ![[...]]/![](...) references in notes
+    """
+    client = _get_client()
+    result = await client.move_attachment(old_path, new_path, rewrite_links=rewrite_links)
+    msg = f"Moved {old_path} -> {result['new_path']}"
+    if rewrite_links:
+        msg += (
+            f" ({result['links_rewritten']} link(s) rewritten in "
+            f"{len(result['notes_updated'])} note(s))"
+        )
+    return msg
+
+
 async def _initialize_oauth() -> None:
     """Initialize OAuth store and provider. Called once at server startup."""
     if _oauth_store is not None and _oauth_provider is not None:
