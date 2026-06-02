@@ -38,7 +38,7 @@ This is a fork of [suhasvemuri/obsidian-self-mcp](https://github.com/suhasvemuri
 - **OAuth 2.1 support** — full OIDC-delegating authorization server for remote MCP clients.
 - **Streamable HTTP transport** — run as a networked server, not just stdio.
 - **API key authentication** — Bearer token auth for headless deployments.
-- **Comprehensive test suite** — 186 tests covering the client, chunking, OAuth, server, and utilities.
+- **Comprehensive test suite** — coverage across the client, chunking, OAuth, server, and utilities.
 - **Path handling fixes** — correct case preservation and `_`-prefix escaping for doc IDs.
 - **Docker support** — containerized deployment.
 

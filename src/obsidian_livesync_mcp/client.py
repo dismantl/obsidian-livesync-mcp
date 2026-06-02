@@ -1,5 +1,6 @@
 """Async CouchDB client for Obsidian vault operations."""
 
+import asyncio
 import logging
 import time
 from collections import defaultdict
@@ -35,6 +36,13 @@ BINARY_EXTENSIONS = {
     ".tar",
     ".gz",
 }
+
+# read_note tolerates a chunk that is momentarily missing — mid-replication, or
+# cleaned up during a concurrent rewrite — by re-fetching the parent and retrying
+# a few times before failing. This mirrors the Obsidian app, which waits for
+# chunks rather than erroring on a transient gap.
+READ_RETRIES = 3
+READ_RETRY_DELAY = 0.25
 
 
 class ObsidianVaultClient:
@@ -223,37 +231,60 @@ class ObsidianVaultClient:
             )
         return results
 
-    async def read_note(self, path: str) -> NoteContent | None:
+    async def read_note(
+        self,
+        path: str,
+        *,
+        retries: int = READ_RETRIES,
+        retry_delay: float = READ_RETRY_DELAY,
+    ) -> NoteContent | None:
         """Read a note's full content by reassembling chunks in order.
 
-        Raises ValueError if any chunks are missing (strict mode — use
-        _read_note_content for bulk scans where skipping broken notes is preferred).
+        A note written concurrently can momentarily reference a chunk that is
+        still mid-replication, or one that was just cleaned up during a rewrite
+        (the reader holds a stale parent while a writer swapped it and deleted
+        the old chunk). Rather than fail on that transient gap — unlike the
+        Obsidian app, which waits for chunks — re-fetch the parent fresh (so a
+        rewrite's new ``children`` get resolved) and retry up to ``retries``
+        times, ``retry_delay`` seconds apart.
+
+        Raises ValueError only if chunks are still missing after the final
+        attempt (e.g. a genuinely broken manifest). For bulk scans that should
+        skip broken notes instead of raising, use _read_note_content.
         """
-        doc = await self._get_doc(path)
-        if not doc or doc.get("deleted"):
-            return None
+        last_missing: list[str] = []
+        for attempt in range(retries + 1):
+            doc = await self._get_doc(path)
+            if not doc or doc.get("deleted"):
+                return None
 
-        is_binary = doc.get("type") == "newnote"
+            is_binary = doc.get("type") == "newnote"
 
-        # Legacy "notes" type stores content directly in data field
-        if doc.get("type") == "notes":
-            data = doc.get("data", "")
-            content = "".join(data) if isinstance(data, list) else str(data)
-        else:
-            chunk_ids = doc.get("children", [])
-            chunks = await self._fetch_chunks(chunk_ids)
+            # Legacy "notes" type stores content directly in data field
+            if doc.get("type") == "notes":
+                data = doc.get("data", "")
+                content = "".join(data) if isinstance(data, list) else str(data)
+            else:
+                chunk_ids = doc.get("children", [])
+                chunks = await self._fetch_chunks(chunk_ids)
+                missing = [cid for cid in chunk_ids if cid not in chunks]
+                if missing:
+                    last_missing = missing
+                    if attempt < retries:
+                        await asyncio.sleep(retry_delay)
+                    continue
+                content = "".join(chunks[cid] for cid in chunk_ids)
 
-            # Reassemble in order — fail loudly if chunks are missing
-            missing = [cid for cid in chunk_ids if cid not in chunks]
-            if missing:
-                raise ValueError(f"Missing {len(missing)} chunk(s) for {path}: {missing[:3]}")
-            content = "".join(chunks[cid] for cid in chunk_ids)
+            return NoteContent(
+                path=doc.get("path", path),
+                content=content,
+                size=doc.get("size", 0),
+                is_binary=is_binary,
+            )
 
-        return NoteContent(
-            path=doc.get("path", path),
-            content=content,
-            size=doc.get("size", 0),
-            is_binary=is_binary,
+        raise ValueError(
+            f"Missing {len(last_missing)} chunk(s) for {path} after "
+            f"{retries + 1} attempt(s): {last_missing[:3]}"
         )
 
     async def list_folders(self) -> list[FolderInfo]:

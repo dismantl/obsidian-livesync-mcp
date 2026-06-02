@@ -152,7 +152,43 @@ async def test_read_note_missing_chunk_raises(client):
     _mock_all_docs({"h:exists00000": "partial"})
 
     with pytest.raises(ValueError, match="Missing 1 chunk"):
-        await client.read_note("Notes/todo.md")
+        await client.read_note("Notes/todo.md", retry_delay=0.0)
+
+
+@respx.mock
+async def test_read_note_retries_transient_missing_chunk(client):
+    """A stale parent is re-fetched so a concurrent rewrite's chunks resolve."""
+    stale_doc = _make_parent_doc("notes/hot.md", ["h:old"], size=5)
+    fresh_doc = _make_parent_doc("notes/hot.md", ["h:new"], size=5)
+    respx.get(f"{BASE}/notes%2Fhot.md").mock(
+        side_effect=[
+            Response(200, json=stale_doc),
+            Response(200, json=fresh_doc),
+        ]
+    )
+    # First fetch: the stale parent's chunk is gone. Second: the fresh parent's
+    # chunk has arrived.
+    respx.post(f"{BASE}/_all_docs").mock(
+        side_effect=[
+            Response(200, json={"rows": []}),
+            Response(200, json={"rows": [{"id": "h:new", "doc": {"data": "Hello"}}]}),
+        ]
+    )
+
+    result = await client.read_note("Notes/hot.md", retry_delay=0.0)
+    assert result is not None
+    assert result.content == "Hello"
+
+
+@respx.mock
+async def test_read_note_raises_after_persistent_missing_chunk(client):
+    """A chunk that never resolves still errors once retries are exhausted."""
+    doc = _make_parent_doc("notes/broken.md", ["h:gone"])
+    _mock_get_doc("notes%2Fbroken.md", doc)
+    respx.post(f"{BASE}/_all_docs").mock(return_value=Response(200, json={"rows": []}))
+
+    with pytest.raises(ValueError, match="Missing 1 chunk"):
+        await client.read_note("Notes/broken.md", retries=2, retry_delay=0.0)
 
 
 @respx.mock
