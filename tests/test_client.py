@@ -157,15 +157,21 @@ async def test_read_note_missing_chunk_raises(client):
 
 @respx.mock
 async def test_read_note_retries_transient_missing_chunk(client):
-    """A chunk momentarily absent (mid-sync, or cleaned up during a concurrent
-    write) resolves on retry instead of hard-failing."""
-    doc = _make_parent_doc("notes/hot.md", ["h:c1"], size=5)
-    _mock_get_doc("notes%2Fhot.md", doc)
-    # First fetch: chunk not present yet. Second: it has arrived.
+    """A stale parent is re-fetched so a concurrent rewrite's chunks resolve."""
+    stale_doc = _make_parent_doc("notes/hot.md", ["h:old"], size=5)
+    fresh_doc = _make_parent_doc("notes/hot.md", ["h:new"], size=5)
+    respx.get(f"{BASE}/notes%2Fhot.md").mock(
+        side_effect=[
+            Response(200, json=stale_doc),
+            Response(200, json=fresh_doc),
+        ]
+    )
+    # First fetch: the stale parent's chunk is gone. Second: the fresh parent's
+    # chunk has arrived.
     respx.post(f"{BASE}/_all_docs").mock(
         side_effect=[
             Response(200, json={"rows": []}),
-            Response(200, json={"rows": [{"id": "h:c1", "doc": {"data": "Hello"}}]}),
+            Response(200, json={"rows": [{"id": "h:new", "doc": {"data": "Hello"}}]}),
         ]
     )
 
