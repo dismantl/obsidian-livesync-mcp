@@ -331,7 +331,13 @@ class ObsidianVaultClient(AttachmentOps):
         raw = content.encode("utf-8") if isinstance(content, str) else bytes(content)
         return await self._write_file_doc(path, raw, is_text=not is_binary)
 
-    async def _write_file_doc(self, path: str, raw: bytes, is_text: bool) -> bool:
+    async def _write_file_doc(
+        self,
+        path: str,
+        raw: bytes,
+        is_text: bool,
+        expected_rev: str | None = None,
+    ) -> bool:
         """Create/update a file doc from raw bytes using LiveSync chunk docs."""
         client = await self._get_client()
         vault_path = path.lstrip("/")
@@ -360,6 +366,8 @@ class ObsidianVaultClient(AttachmentOps):
         # Check existing doc
         existing = await self._get_doc(vault_path)
         old_children = set(existing.get("children", [])) if existing else set()
+        if expected_rev and (not existing or existing.get("_rev") != expected_rev):
+            raise ValueError(f"File changed during write: {vault_path}")
 
         if existing:
             existing["children"] = chunk_ids
@@ -371,6 +379,8 @@ class ObsidianVaultClient(AttachmentOps):
             existing_id = encode_doc_id(existing["_id"])
             resp = await client.put(f"/{existing_id}", json=existing)
             if resp.status_code == 409:
+                if expected_rev:
+                    raise ValueError(f"File changed during write: {vault_path}")
                 # Conflict - refetch and retry once
                 fresh = await self._get_doc(vault_path)
                 if fresh:

@@ -21,8 +21,10 @@ class _PutClient:
 
     async def put(self, _url, json):
         path = json["path"].lstrip("/")
-        self.owner.docs[path.lower()] = json
+        self.owner.docs[path.lower()] = dict(json)
         self.owner.put_docs.append(json)
+        if self.owner.after_put:
+            self.owner.after_put(json)
         return _Response()
 
 
@@ -35,6 +37,7 @@ class _MemoryAttachmentClient(AttachmentOps):
         self.fail_writes = set()
         self.writes = []
         self.put_docs = []
+        self.after_put = None
 
     async def _get_client(self):
         return _PutClient(self)
@@ -43,7 +46,8 @@ class _MemoryAttachmentClient(AttachmentOps):
         return vault_path.lstrip("/").lower()
 
     async def _get_doc(self, path: str):
-        return self.docs.get(path.lstrip("/").lower())
+        doc = self.docs.get(path.lstrip("/").lower())
+        return dict(doc) if doc else None
 
     async def _get_all_file_docs(self, include_deleted: bool = False):
         return [doc for doc in self.docs.values() if include_deleted or not doc.get("deleted")]
@@ -85,10 +89,17 @@ class _MemoryAttachmentClient(AttachmentOps):
             is_binary=False,
         )
 
-    async def _write_file_doc(self, path: str, raw: bytes, is_text: bool):
+    async def _write_file_doc(
+        self, path: str, raw: bytes, is_text: bool, expected_rev: str | None = None
+    ):
         vault_path = path.lstrip("/")
+        if vault_path in self.fail_writes:
+            raise ValueError(f"write failed: {vault_path}")
+        existing = self.docs.get(vault_path.lower())
+        if expected_rev and (not existing or existing.get("_rev") != expected_rev):
+            raise ValueError(f"File changed during write: {vault_path}")
         self.raw[vault_path] = raw
-        self.docs[vault_path.lower()] = {
+        doc = {
             "_id": self._doc_id(vault_path),
             "_rev": "1-new",
             "path": vault_path,
@@ -98,6 +109,9 @@ class _MemoryAttachmentClient(AttachmentOps):
             "mtime": 2,
             "type": "plain" if is_text else "newnote",
         }
+        if is_text:
+            doc["content"] = raw.decode("utf-8")
+        self.docs[vault_path.lower()] = doc
         return True
 
     async def write_note(self, path: str, content: str, is_binary: bool = False):
@@ -291,6 +305,55 @@ async def test_move_attachment_reuses_chunks_and_rewrites_links():
     assert client.docs["media/new.png"]["children"] == ["h:img"]
     assert client.docs["notes/a.md"]["content"] == "before ![[new.png|120]] after"
     assert client.docs["notes/b.md"]["content"] == "![cap](Media/new.png)"
+
+
+async def test_move_attachment_rewrites_current_note_content():
+    client = _MemoryAttachmentClient(
+        [
+            _doc("Attachments/old.png", "newnote", children=["h:img"]),
+            _doc("Notes/a.md", content="before ![[old.png]]"),
+        ]
+    )
+
+    def concurrent_note_edit(doc):
+        if doc["path"] != "Media/new.png":
+            return
+        client.after_put = None
+        note = client.docs["notes/a.md"]
+        note["_rev"] = "2-doc"
+        note["content"] = "concurrent edit ![[old.png]]"
+
+    client.after_put = concurrent_note_edit
+
+    await client.move_attachment("Attachments/old.png", "Media/new.png")
+
+    assert client.docs["notes/a.md"]["content"] == "concurrent edit ![[new.png]]"
+
+
+async def test_move_attachment_aborts_when_source_changes_before_delete():
+    client = _MemoryAttachmentClient(
+        [
+            _doc("Attachments/old.png", "newnote", children=["h:old"]),
+        ]
+    )
+
+    def concurrent_source_edit(doc):
+        if doc["path"] != "Media/new.png":
+            return
+        client.after_put = None
+        source = client.docs["attachments/old.png"]
+        source["_rev"] = "2-doc"
+        source["children"] = ["h:new"]
+        source["size"] = 42
+
+    client.after_put = concurrent_source_edit
+
+    with pytest.raises(ValueError, match="changed during move"):
+        await client.move_attachment("Attachments/old.png", "Media/new.png")
+
+    assert not client.docs["attachments/old.png"].get("deleted")
+    assert client.docs["attachments/old.png"]["children"] == ["h:new"]
+    assert client.docs["media/new.png"].get("deleted")
 
 
 async def test_move_attachment_rewrite_failure_keeps_source_live():
