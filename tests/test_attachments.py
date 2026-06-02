@@ -391,6 +391,30 @@ async def test_move_attachment_rewrite_failure_restores_updated_notes():
     assert client.docs["notes/b.md"]["content"] == "![cap](Attachments/old.png)"
 
 
+async def test_move_attachment_rollback_preserves_concurrent_note_edits():
+    client = _MemoryAttachmentClient(
+        [
+            _doc("Attachments/old.png", "newnote", children=["h:img"]),
+            _doc("Notes/a.md", content="original ![[old.png]]"),
+        ]
+    )
+
+    async def fail_after_concurrent_note_edit(path, expected_rev):
+        note = client.docs["notes/a.md"]
+        note["_rev"] = "2-doc"
+        note["content"] = "concurrent edit ![[new.png]]"
+        raise ValueError(f"delete failed: {path} {expected_rev}")
+
+    client._soft_delete_doc_if_current = fail_after_concurrent_note_edit
+
+    with pytest.raises(ValueError, match="delete failed"):
+        await client.move_attachment("Attachments/old.png", "Media/new.png")
+
+    assert not client.docs["attachments/old.png"].get("deleted")
+    assert "media/new.png" not in client.docs or client.docs["media/new.png"].get("deleted")
+    assert client.docs["notes/a.md"]["content"] == "concurrent edit ![[old.png]]"
+
+
 async def test_move_attachment_replacing_soft_deleted_target_cleans_stale_chunks():
     client = _MemoryAttachmentClient(
         [

@@ -203,7 +203,7 @@ class AttachmentOps:
                         note_paths.append(note_path)
 
         notes_updated: list[str] = []
-        note_originals: dict[str, str] = {}
+        note_rollbacks: dict[str, tuple[str, str]] = {}
         links_rewritten = 0
         source_rev = old_doc.get("_rev")
         resp = await client.put(f"/{encode_doc_id(new_doc['_id'])}", json=new_doc)
@@ -214,16 +214,17 @@ class AttachmentOps:
                 rewrite = await self._rewrite_current_note_refs(note_path, old_path, new_vault_path)
                 if not rewrite:
                     continue
-                original_content, count = rewrite
-                note_originals[note_path] = original_content
+                original_content, rewritten_content, count = rewrite
+                note_rollbacks[note_path] = (original_content, rewritten_content)
                 notes_updated.append(note_path)
                 links_rewritten += count
             await self._soft_delete_doc_if_current(old_path, source_rev)
         except Exception:
             await self._rollback_move_failure(
+                old_path,
                 new_vault_path,
                 existing_new,
-                note_originals,
+                note_rollbacks,
                 notes_updated,
             )
             raise
@@ -244,14 +245,20 @@ class AttachmentOps:
 
     async def _rollback_move_failure(
         self,
+        old_path: str,
         new_path: str,
         existing_target: dict | None,
-        note_originals: dict[str, str],
+        note_rollbacks: dict[str, tuple[str, str]],
         notes_updated: list[str],
     ) -> None:
         for note_path in reversed(notes_updated):
             try:
-                await self.write_note(note_path, note_originals[note_path])
+                await self._rollback_note_refs(
+                    note_path,
+                    old_path,
+                    new_path,
+                    note_rollbacks[note_path],
+                )
             except Exception:
                 logger.warning(
                     "Failed to restore note %s while rolling back attachment move",
@@ -271,6 +278,37 @@ class AttachmentOps:
                 exc_info=True,
             )
 
+    async def _rollback_note_refs(
+        self,
+        note_path: str,
+        old_path: str,
+        new_path: str,
+        rollback: tuple[str, str],
+    ) -> None:
+        doc = await self._get_doc(note_path)
+        if not doc or doc.get("deleted") or doc.get("type") == "newnote":
+            return
+
+        content = await self._read_text_doc_content(doc)
+        if content is None:
+            return
+
+        original_content, rewritten_content = rollback
+        if content == rewritten_content:
+            restored_content = original_content
+        else:
+            restored_content, count = rewrite_attachment_refs(content, new_path, old_path)
+            if not count:
+                return
+
+        expected_rev = doc.get("_rev")
+        await self._write_file_doc(
+            note_path,
+            restored_content.encode("utf-8"),
+            is_text=True,
+            expected_rev=expected_rev,
+        )
+
     async def _restore_file_doc(self, path: str, previous_doc: dict) -> None:
         client = await self._get_client()
         current = await self._get_doc(path)
@@ -285,7 +323,7 @@ class AttachmentOps:
         note_path: str,
         old_path: str,
         new_path: str,
-    ) -> tuple[str, int] | None:
+    ) -> tuple[str, str, int] | None:
         doc = await self._get_doc(note_path)
         if not doc or doc.get("deleted") or doc.get("type") == "newnote":
             return None
@@ -302,7 +340,7 @@ class AttachmentOps:
             is_text=True,
             expected_rev=expected_rev,
         )
-        return content, count
+        return content, new_content, count
 
     async def _soft_delete_doc_if_current(self, path: str, expected_rev: str | None) -> None:
         client = await self._get_client()
