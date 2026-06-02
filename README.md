@@ -7,6 +7,7 @@ No Obsidian app required. Works on headless servers, in CI pipelines, from AI ag
 ## Features
 
 - **Full vault CRUD** — read, write, append, delete, and search notes
+- **Attachments** — add, get, remove, list, find embeds/orphans, and move/rename binary files with link rewriting
 - **Frontmatter & tags** — read/update YAML properties, list and search by tag
 - **Backlinks & outbound links** — find connections between notes via content scanning
 - **Two transports** — stdio (local) and streamable-http (remote/networked)
@@ -34,6 +35,7 @@ This is a fork of [suhasvemuri/obsidian-self-mcp](https://github.com/suhasvemuri
 - **LiveSync-compatible writes** — the original only read from CouchDB; writes didn't produce valid LiveSync documents. This fork implements proper Rabin-Karp V3 content-defined chunking and xxhash64 content-addressed chunk IDs, so writes sync back to Obsidian correctly.
 - **Correct delete behavior** — the original used CouchDB hard-deletes (`_deleted: true`), which orphaned files on synced devices. Now uses LiveSync soft-delete semantics.
 - **Shared chunk safety** — deletes and updates no longer destroy chunks that are still referenced by other notes.
+- **Attachment operations** — binary files can be managed through MCP or the CLI without opening Obsidian.
 - **Soft-delete awareness** — reads and listings filter out LiveSync-deleted notes instead of surfacing tombstones.
 - **OAuth 2.1 support** — full OIDC-delegating authorization server for remote MCP clients.
 - **Streamable HTTP transport** — run as a networked server, not just stdio.
@@ -185,7 +187,7 @@ docker run -p 8080:8080 \
 | `write_note` | Create or update a note |
 | `search_notes` | Search note content (case-insensitive) |
 | `append_note` | Append content to an existing note |
-| `delete_note` | Delete a note and its chunks |
+| `delete_note` | Delete a note with LiveSync-compatible soft-delete semantics |
 | `list_folders` | List all folders with note counts |
 | `read_frontmatter` | Read frontmatter properties from a note |
 | `update_frontmatter` | Set/update frontmatter properties (JSON input) |
@@ -193,6 +195,19 @@ docker run -p 8080:8080 \
 | `search_by_tag` | Find notes containing a specific tag |
 | `get_backlinks` | Find notes that link to a given note |
 | `get_outbound_links` | List wikilinks from a note |
+| `add_attachment` | Add or replace a binary attachment from base64 bytes |
+| `get_attachment` | Download an attachment as base64, with a 10 MB default size guard |
+| `list_attachments` | List binary attachments with metadata |
+| `remove_attachment` | Remove an attachment, blocking referenced files unless forced |
+| `find_attachment_embeds` | Find notes that embed or link to an attachment |
+| `find_orphan_attachments` | List attachments that no note references |
+| `move_attachment` | Move or rename an attachment and rewrite note references |
+
+### Attachments
+
+Attachment tools treat binary files as LiveSync `type="newnote"` parent documents. Over MCP, file bytes cross the boundary as base64 strings (`add_attachment`, `get_attachment`). The CLI uses real local files for upload/download.
+
+Reference discovery and link rewriting match by case-insensitive basename, the same limitation as the existing backlink scan. If two folders contain attachments with the same filename, embed/orphan results are ambiguous.
 
 ## CLI Usage
 
@@ -238,6 +253,15 @@ obsidian tags --find "project"           # find notes with a tag
 obsidian backlinks "Notes/todo.md"       # notes linking to this note
 obsidian links "Notes/todo.md"           # outbound wikilinks from this note
 
+# Attachments
+obsidian attach add "Attachments/photo.png" -f ./photo.png
+obsidian attach get "Attachments/photo.png" -o /tmp/photo.png
+obsidian attach ls Attachments
+obsidian attach embeds "Attachments/photo.png"
+obsidian attach orphans Attachments
+obsidian attach mv "Attachments/photo.png" "Media/photo.png"
+obsidian attach rm "Media/photo.png" -y
+
 # List folders
 obsidian folders
 obsidian tree                            # alias
@@ -245,7 +269,9 @@ obsidian tree                            # alias
 
 ## How LiveSync stores data
 
-LiveSync splits each note into a parent document (metadata + ordered list of chunk IDs) and one or more chunk documents (the actual content). This tool handles all of that transparently — reads reassemble chunks in order, writes create proper chunk documents, and deletes clean up both the parent and all chunks.
+LiveSync splits each file into a parent document (metadata + ordered list of chunk IDs) and one or more chunk documents (the actual content). Text files use `type="plain"`; binary attachments use `type="newnote"`. This tool handles the parent/chunk model transparently — reads reassemble chunks in order, writes create chunk documents before the parent, and default deletes use LiveSync-compatible soft-delete semantics.
+
+Binary chunks are independently base64-encoded byte ranges. Correct reassembly decodes each chunk and joins bytes; joining base64 strings corrupts multi-chunk binaries.
 
 Document IDs are lowercased vault paths. Paths starting with `_` (like `_Changelog/`) get a `/` prefix since CouchDB reserves `_`-prefixed IDs.
 
@@ -269,8 +295,8 @@ These settings can be any value — reads always work, writes use LiveSync defau
 | Setting | Our Behavior |
 |---------|-------------|
 | `hashAlg` | Writes use `xxhash64` (LiveSync default). Reads work with any hash algorithm. |
-| `chunkSplitterVersion` | Writes use `v3-rabin-karp` (LiveSync default). Reads work with any splitter. |
-| `customChunkSize` | Writes use `0` (default). Reads work with any chunk size. |
+| `chunkSplitterVersion` | Writes use Rabin-Karp-compatible chunks. Reads work with any splitter. |
+| `customChunkSize` | Reads work with any chunk size. Write boundaries may differ from current LiveSync defaults, which affects dedupe but not readability. |
 | `useEden` | Deprecated. Ignored on read, writes set `eden: {}`. |
 
 ### Unsupported Features

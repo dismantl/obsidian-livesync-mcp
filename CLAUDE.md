@@ -62,18 +62,19 @@ OAUTH_AUTHORIZED_EMAIL=you@example.com
 
 All source code lives under `src/obsidian_livesync_mcp/`. There are two entry points that share a common async client:
 
-- **`server.py`** — FastMCP server exposing 13 tools over stdio. Uses a lazy-initialized global `ObsidianVaultClient` singleton.
+- **`server.py`** — FastMCP server exposing 20 tools over stdio. Uses a lazy-initialized global `ObsidianVaultClient` singleton.
 - **`cli.py`** — Argparse CLI (`obsidian` command) with subcommands. Runs async operations via `asyncio.run()`.
 
 Both delegate all CouchDB interaction to:
 
-- **`client.py`** — `ObsidianVaultClient` class. Async HTTP client (`httpx.AsyncClient`) that handles all CRUD, search, frontmatter, tags, and backlink operations. This is where the core business logic lives.
+- **`client.py`** — `ObsidianVaultClient` class. Async HTTP client (`httpx.AsyncClient`) that handles CRUD, search, frontmatter, tags, backlinks, and attachment operations. This is where the core CouchDB logic lives.
 
 Supporting modules:
 
 - **`config.py`** — Frozen dataclass reading env vars at startup.
-- **`models.py`** — Data classes (`NoteMetadata`, `NoteContent`, `SearchResult`, `BacklinkInfo`, `FolderInfo`).
-- **`utils.py`** — Path normalization, chunk ID generation, frontmatter/YAML parsing, wikilink and tag extraction.
+- **`attachments.py`** — `AttachmentOps` mixin inherited by `ObsidianVaultClient`. Handles binary attachment CRUD, embed/orphan discovery, and move-with-link-rewriting. Attachments are binary files stored as `type="newnote"` parent docs.
+- **`models.py`** — Data classes (`NoteMetadata`, `NoteContent`, `AttachmentMetadata`, `AttachmentContent`, `SearchResult`, `BacklinkInfo`, `FolderInfo`).
+- **`utils.py`** — Path normalization, chunk ID generation, frontmatter/YAML parsing, wikilink/tag extraction, and attachment reference parsing/rewriting.
 
 ### OAuth Subsystem (optional)
 
@@ -93,9 +94,12 @@ Understanding this is essential for working on `client.py`, `utils.py`, or `chun
 - Each note is stored as a **parent document** (CouchDB doc with `_id` = lowercased vault path) containing a `children` array of chunk IDs.
 - **Chunk documents** hold the actual content (`_id` = `"h:" + xxhash64_base36`, `type` = `"leaf"`). Chunk IDs are content-hash based — same content always produces the same ID.
 - Content is split using **Rabin-Karp V3** content-defined chunking (PRIME=31, window=48 bytes, boundary when `hash % avgChunkSize == 1`). Text avg chunk = max(128B, size/20). Binary avg chunk = max(4KB, size/12).
+- Current upstream LiveSync uses larger fixed target sizes for Rabin-Karp chunks. This repo's older sizing is format-compatible and readable, but boundaries can differ, reducing dedupe with chunks created by the app.
+- Binary chunks are independently base64-encoded byte ranges. Reassembly must decode each chunk and concatenate bytes; concatenating base64 strings corrupts multi-chunk binaries.
+- Attachments are binary parent docs with `type="newnote"`. Text notes use `type="plain"`.
 - Legacy documents (type `"notes"`) store content directly in a `data` field instead of chunks.
 - Paths starting with `_` (e.g., `_Changelog/`) get a `/` prefix because CouchDB reserves `_`-prefixed IDs.
-- Reads must reassemble chunks in order. Writes must create chunk docs before the parent. Updates clean up orphaned chunks. Deletes must clean up both.
+- Reads must reassemble chunks in order. Writes must create chunk docs before the parent. Updates clean up orphaned chunks. Deletes default to LiveSync-compatible soft-delete; hard-delete is opt-in for broken-manifest cleanup.
 
 ### Required LiveSync Settings
 
