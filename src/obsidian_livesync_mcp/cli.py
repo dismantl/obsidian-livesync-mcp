@@ -167,6 +167,83 @@ async def _cmd_folders(client: ObsidianVaultClient, args):
     print(f"\n{len(folders)} folders")
 
 
+async def _cmd_attach(client: ObsidianVaultClient, args):
+    cmd = args.attach_command
+    if cmd == "add":
+        try:
+            with open(args.file, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            print(f"Error reading file: {e}", file=sys.stderr)
+            sys.exit(1)
+        await client.write_attachment(args.path, data)
+        print(f"Added: {args.path} ({len(data)} bytes)")
+    elif cmd == "get":
+        att = await client.read_attachment(args.path)
+        if att is None:
+            print(f"Not found: {args.path}", file=sys.stderr)
+            sys.exit(1)
+        if args.out:
+            try:
+                with open(args.out, "wb") as f:
+                    f.write(att.data)
+            except OSError as e:
+                print(f"Error writing file: {e}", file=sys.stderr)
+                sys.exit(1)
+            print(f"Wrote {att.size} bytes to {args.out}")
+        else:
+            import base64
+
+            print(base64.b64encode(att.data).decode("ascii"))
+    elif cmd == "rm":
+        if not args.y:
+            confirm = input(f"Remove '{args.path}'? [y/N] ")
+            if confirm.lower() != "y":
+                print("Cancelled.")
+                return
+        result = await client.remove_attachment(args.path, hard=args.hard, force=args.force)
+        if not result["deleted"]:
+            print(
+                f"Not removed: referenced by {len(result['referenced_by'])} note(s):",
+                file=sys.stderr,
+            )
+            for path in result["referenced_by"]:
+                print(f"  {path}", file=sys.stderr)
+            print("Use --force to remove anyway.", file=sys.stderr)
+            sys.exit(1)
+        print(f"Removed: {args.path}" + (" (hard)" if args.hard else ""))
+    elif cmd == "ls":
+        attachments = await client.list_attachments(folder=args.folder, limit=args.n)
+        if not attachments:
+            print("No attachments found.")
+            return
+        for att in attachments:
+            print(f"  {att.path}  ({att.size}B, .{att.extension})")
+        print(f"\n{len(attachments)} attachments")
+    elif cmd == "embeds":
+        embeds = await client.find_attachment_embeds(args.path)
+        if not embeds:
+            print(f"No notes reference: {args.path}")
+            return
+        for embed in embeds:
+            print(f"  {embed.source_path}")
+        print(f"\n{len(embeds)} notes")
+    elif cmd == "orphans":
+        orphans = await client.find_orphan_attachments(folder=args.folder)
+        if not orphans:
+            print("No orphan attachments.")
+            return
+        for att in orphans:
+            print(f"  {att.path}  ({att.size}B)")
+        print(f"\n{len(orphans)} orphans")
+    elif cmd == "mv":
+        result = await client.move_attachment(args.old, args.new, rewrite_links=not args.no_rewrite)
+        print(
+            f"Moved {args.old} -> {result['new_path']} "
+            f"({result['links_rewritten']} links in {len(result['notes_updated'])} notes)"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="obsidian",
@@ -235,6 +312,39 @@ def main():
     # folders / tree
     sub.add_parser("folders", aliases=["tree"], help="List folders")
 
+    # attach
+    p_attach = sub.add_parser("attach", help="Attachment (binary file) operations")
+    asub = p_attach.add_subparsers(dest="attach_command", required=True)
+
+    a_add = asub.add_parser("add", help="Add/replace an attachment from a local file")
+    a_add.add_argument("path", help="Vault path for the attachment")
+    a_add.add_argument("-f", "--file", required=True, help="Local file to upload")
+
+    a_get = asub.add_parser("get", help="Download an attachment")
+    a_get.add_argument("path", help="Vault path to the attachment")
+    a_get.add_argument("-o", "--out", help="Write bytes to this local file (else base64 to stdout)")
+
+    a_rm = asub.add_parser("rm", help="Remove an attachment")
+    a_rm.add_argument("path", help="Vault path to the attachment")
+    a_rm.add_argument("--force", action="store_true", help="Delete even if notes reference it")
+    a_rm.add_argument("--hard", action="store_true", help="CouchDB hard-delete with chunk cleanup")
+    a_rm.add_argument("-y", action="store_true", help="Skip confirmation")
+
+    a_ls = asub.add_parser("ls", help="List attachments")
+    a_ls.add_argument("folder", nargs="?", help="Folder to filter")
+    a_ls.add_argument("-n", type=int, default=100, help="Limit (default 100)")
+
+    a_emb = asub.add_parser("embeds", help="Find notes referencing an attachment")
+    a_emb.add_argument("path", help="Vault path to the attachment")
+
+    a_orph = asub.add_parser("orphans", help="List unreferenced attachments")
+    a_orph.add_argument("folder", nargs="?", help="Folder to filter")
+
+    a_mv = asub.add_parser("mv", help="Move/rename an attachment and rewrite links")
+    a_mv.add_argument("old", help="Current vault path")
+    a_mv.add_argument("new", help="New vault path")
+    a_mv.add_argument("--no-rewrite", action="store_true", help="Do not rewrite references")
+
     args = parser.parse_args()
 
     cmd_map = {
@@ -254,6 +364,7 @@ def main():
         "links": _cmd_links,
         "folders": _cmd_folders,
         "tree": _cmd_folders,
+        "attach": _cmd_attach,
     }
 
     handler = cmd_map[args.command]
