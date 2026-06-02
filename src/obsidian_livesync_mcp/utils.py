@@ -257,6 +257,21 @@ def ref_basename(ref: str) -> str:
     return target.rsplit("/", 1)[-1].lower()
 
 
+def _normalized_ref_path(ref: str) -> str:
+    target, _, _ = _split_markdown_ref(ref)
+    target, _ = _split_wikilink_ref(target)
+    target, _ = _split_target_fragment(target)
+    target = urllib.parse.unquote(target.strip())
+    return target.lstrip("/").lower()
+
+
+def _ref_matches_attachment(target: str, old_path: str, old_base: str) -> bool:
+    normalized_target = _normalized_ref_path(target)
+    if "/" in normalized_target:
+        return normalized_target == _normalized_ref_path(old_path)
+    return normalized_target.rsplit("/", 1)[-1] == old_base
+
+
 def _replacement_path(original_target: str, new_path: str) -> str:
     target = urllib.parse.unquote(original_target.strip().strip("<>"))
     target, fragment = _split_target_fragment(target)
@@ -266,10 +281,11 @@ def _replacement_path(original_target: str, new_path: str) -> str:
 
 
 def rewrite_attachment_refs(content: str, old_path: str, new_path: str) -> tuple[str, int]:
-    """Rewrite references matching an attachment basename.
+    """Rewrite references matching an attachment.
 
-    Matching is intentionally basename-only and case-insensitive, mirroring the
-    existing backlink behavior. Folder-duplicate attachment names are ambiguous.
+    Basename-only references match case-insensitively by basename. Explicit path
+    references must match the old attachment path to avoid rewriting duplicate
+    attachment filenames in other folders.
     """
     old_base = ref_basename(old_path)
     count = 0
@@ -278,7 +294,7 @@ def rewrite_attachment_refs(content: str, old_path: str, new_path: str) -> tuple
         nonlocal count
         body = match.group("body")
         target, suffix = _split_wikilink_ref(body)
-        if ref_basename(target) != old_base:
+        if not _ref_matches_attachment(target, old_path, old_base):
             return match.group(0)
         count += 1
         bang = match.group("bang") or ""
@@ -291,7 +307,7 @@ def rewrite_attachment_refs(content: str, old_path: str, new_path: str) -> tuple
     for match in _iter_markdown_refs(rewritten):
         raw_target = match["target"]
         target, suffix, angled = _split_markdown_ref(raw_target)
-        if not _is_vault_ref(target) or ref_basename(target) != old_base:
+        if not _is_vault_ref(target) or not _ref_matches_attachment(target, old_path, old_base):
             continue
         count += 1
         replacement = _replacement_path(target, new_path)

@@ -162,6 +162,11 @@ class AttachmentOps:
             raise ValueError(f"Not a binary attachment: {old_path}")
 
         new_vault_path = new_path.lstrip("/")
+        if _is_livesync_plain_text_path(new_vault_path):
+            raise ValueError(
+                "move_attachment only supports binary attachment targets; use note tools "
+                "for plain-text LiveSync files such as .svg, .txt, and .canvas"
+            )
         existing_new = await self._get_doc(new_vault_path)
         if existing_new and not existing_new.get("deleted"):
             raise ValueError(f"Target already exists: {new_path}")

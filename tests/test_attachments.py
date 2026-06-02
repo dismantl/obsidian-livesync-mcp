@@ -347,6 +347,20 @@ async def test_move_attachment_replacing_soft_deleted_target_cleans_stale_chunks
     assert client.deleted_chunks == ["h:stale"]
 
 
+async def test_move_attachment_rejects_livesync_plain_text_target():
+    client = _MemoryAttachmentClient(
+        [
+            _doc("Attachments/old.png", "newnote", children=["h:img"]),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="plain-text LiveSync file"):
+        await client.move_attachment("Attachments/old.png", "Media/new.svg")
+
+    assert not client.docs["attachments/old.png"].get("deleted")
+    assert "media/new.svg" not in client.docs
+
+
 async def test_move_attachment_rejects_existing_target():
     client = _MemoryAttachmentClient(
         [

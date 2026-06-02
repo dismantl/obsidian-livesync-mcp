@@ -304,12 +304,30 @@ def test_rewrite_attachment_refs_wikilink_full_path():
     assert "![[media/new.png]]" in new
 
 
+def test_rewrite_attachment_refs_wikilink_preserves_different_explicit_path():
+    content = "![[Attachments/old.png]] ![[Other/old.png]] ![[old.png]]"
+    new, count = rewrite_attachment_refs(content, "Attachments/old.png", "Media/new.png")
+    assert count == 2
+    assert "![[Media/new.png]]" in new
+    assert "![[Other/old.png]]" in new
+    assert "![[new.png]]" in new
+
+
 def test_rewrite_attachment_refs_markdown():
     content = "![cap](att/old.png) and ![](old.png)"
     new, count = rewrite_attachment_refs(content, "att/old.png", "media/new.png")
     assert count == 2
     assert "![cap](media/new.png)" in new
     assert "![](new.png)" in new
+
+
+def test_rewrite_attachment_refs_markdown_preserves_different_explicit_path():
+    content = "![a](Attachments/old.png) ![b](Other/old.png) ![c](old.png)"
+    new, count = rewrite_attachment_refs(content, "Attachments/old.png", "Media/new.png")
+    assert count == 2
+    assert "![a](Media/new.png)" in new
+    assert "![b](Other/old.png)" in new
+    assert "![c](new.png)" in new
 
 
 def test_rewrite_attachment_refs_markdown_preserves_fragment():

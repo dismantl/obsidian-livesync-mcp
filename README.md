@@ -207,7 +207,7 @@ docker run -p 8080:8080 \
 
 Attachment tools treat binary files as LiveSync `type="newnote"` parent documents. Over MCP, file bytes cross the boundary as base64 strings (`add_attachment`, `get_attachment`). The CLI uses real local files for upload/download. LiveSync plain-text file types (`.md`, `.txt`, `.svg`, `.html`, `.csv`, `.css`, `.js`, `.xml`, `.canvas`) should be managed with the note/text APIs instead of `add_attachment`.
 
-Reference discovery and link rewriting match by case-insensitive basename, the same limitation as the existing backlink scan. If two folders contain attachments with the same filename, embed/orphan results are ambiguous.
+Reference discovery matches by case-insensitive basename, the same limitation as the existing backlink scan. Link rewriting preserves basename-only references, but explicit path references must match the moved attachment path so duplicates in other folders are not rewritten. If two folders contain attachments with the same filename, embed/orphan results are ambiguous.
 
 ## CLI Usage
 
