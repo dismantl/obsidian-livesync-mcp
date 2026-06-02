@@ -165,10 +165,7 @@ class AttachmentOps:
             new_doc["_id"] = existing_new["_id"]
             new_doc["_rev"] = existing_new["_rev"]
 
-        resp = await client.put(f"/{encode_doc_id(new_doc['_id'])}", json=new_doc)
-        resp.raise_for_status()
-
-        notes_updated: list[str] = []
+        note_rewrites: list[tuple[str, str, str, int]] = []
         links_rewritten = 0
         if rewrite_links:
             all_docs = await self._get_all_file_docs()
@@ -181,11 +178,26 @@ class AttachmentOps:
                 new_content, count = rewrite_attachment_refs(content, old_path, new_vault_path)
                 if count:
                     note_path = doc.get("path", doc["_id"])
-                    await self.write_note(note_path, new_content)
-                    notes_updated.append(note_path)
+                    note_rewrites.append((note_path, content, new_content, count))
                     links_rewritten += count
 
-        await self.delete_note(old_path, hard=False)
+        notes_updated: list[str] = []
+        resp = await client.put(f"/{encode_doc_id(new_doc['_id'])}", json=new_doc)
+        resp.raise_for_status()
+
+        try:
+            for note_path, _, new_content, _ in note_rewrites:
+                await self.write_note(note_path, new_content)
+                notes_updated.append(note_path)
+            await self.delete_note(old_path, hard=False)
+        except Exception:
+            await self._rollback_move_failure(
+                new_vault_path,
+                existing_new,
+                note_rewrites,
+                notes_updated,
+            )
+            raise
 
         replaced = replaced_target_children - set(new_doc.get("children", []))
         if replaced:
@@ -200,6 +212,45 @@ class AttachmentOps:
             "links_rewritten": links_rewritten,
             "notes_updated": notes_updated,
         }
+
+    async def _rollback_move_failure(
+        self,
+        new_path: str,
+        existing_target: dict | None,
+        note_rewrites: list[tuple[str, str, str, int]],
+        notes_updated: list[str],
+    ) -> None:
+        originals = {path: original for path, original, _, _ in note_rewrites}
+        for note_path in reversed(notes_updated):
+            try:
+                await self.write_note(note_path, originals[note_path])
+            except Exception:
+                logger.warning(
+                    "Failed to restore note %s while rolling back attachment move",
+                    note_path,
+                    exc_info=True,
+                )
+
+        try:
+            if existing_target:
+                await self._restore_file_doc(new_path, existing_target)
+            else:
+                await self.delete_note(new_path, hard=False)
+        except Exception:
+            logger.warning(
+                "Failed to restore target %s while rolling back attachment move",
+                new_path,
+                exc_info=True,
+            )
+
+    async def _restore_file_doc(self, path: str, previous_doc: dict) -> None:
+        client = await self._get_client()
+        current = await self._get_doc(path)
+        restored = dict(previous_doc)
+        if current and current.get("_rev"):
+            restored["_rev"] = current["_rev"]
+        resp = await client.put(f"/{encode_doc_id(restored['_id'])}", json=restored)
+        resp.raise_for_status()
 
     def _attachment_metadata(self, doc: dict) -> AttachmentMetadata:
         path = doc.get("path", doc["_id"])

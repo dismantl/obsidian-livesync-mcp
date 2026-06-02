@@ -293,6 +293,26 @@ async def test_move_attachment_rewrite_failure_keeps_source_live():
         await client.move_attachment("Attachments/old.png", "Media/new.png")
 
     assert not client.docs["attachments/old.png"].get("deleted")
+    assert "media/new.png" not in client.docs or client.docs["media/new.png"].get("deleted")
+
+
+async def test_move_attachment_rewrite_failure_restores_updated_notes():
+    client = _MemoryAttachmentClient(
+        [
+            _doc("Attachments/old.png", "newnote", children=["h:img"]),
+            _doc("Notes/a.md", content="![[old.png]]"),
+            _doc("Notes/b.md", content="![cap](Attachments/old.png)"),
+        ]
+    )
+    client.fail_writes.add("Notes/b.md")
+
+    with pytest.raises(ValueError, match="write failed"):
+        await client.move_attachment("Attachments/old.png", "Media/new.png")
+
+    assert not client.docs["attachments/old.png"].get("deleted")
+    assert "media/new.png" not in client.docs or client.docs["media/new.png"].get("deleted")
+    assert client.docs["notes/a.md"]["content"] == "![[old.png]]"
+    assert client.docs["notes/b.md"]["content"] == "![cap](Attachments/old.png)"
 
 
 async def test_move_attachment_replacing_soft_deleted_target_cleans_stale_chunks():
