@@ -260,6 +260,13 @@ def test_extract_attachment_refs_markdown_embed():
     assert "doc.pdf" in refs
 
 
+def test_extract_attachment_refs_markdown_parentheses_in_filename():
+    content = "![alt](images/image%20(1).png) and ![](<images/photo (final).jpg>)"
+    refs = extract_attachment_refs(content)
+    assert "images/image%20(1).png" in refs
+    assert "<images/photo (final).jpg>" in refs
+
+
 def test_extract_attachment_refs_ignores_external_markdown_urls():
     content = (
         "![remote](https://example.com/old.png) "
@@ -311,6 +318,14 @@ def test_rewrite_attachment_refs_markdown_preserves_fragment():
     assert count == 1
     assert "[pdf](media/new.pdf#page=2)" in new
     assert "![](old.png#crop=10)" in new
+
+
+def test_rewrite_attachment_refs_markdown_parentheses_in_filename():
+    content = "![alt](images/image%20(1).png) and ![](<images/image (1).png>)"
+    new, count = rewrite_attachment_refs(content, "images/image (1).png", "media/new.png")
+    assert count == 2
+    assert "![alt](media/new.png)" in new
+    assert "![](<media/new.png>)" in new
 
 
 def test_rewrite_attachment_refs_leaves_external_markdown_urls():
