@@ -6,6 +6,7 @@ from httpx import Response
 
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 from obsidian_livesync_mcp.config import Config
+from obsidian_livesync_mcp.utils import encode_doc_id, generate_chunk_id
 
 BASE = "http://test:5984/test-vault"
 
@@ -362,6 +363,46 @@ async def test_write_note_update_existing(client):
 
     result = await client.write_note("Notes/todo.md", "Updated content")
     assert result is True
+
+
+@respx.mock
+async def test_write_note_resurrects_tombstoned_chunk_conflict(client):
+    """A chunk 409 can mean a deleted CouchDB tombstone, not live chunk data."""
+    import json as _json
+
+    content = "Recovered content"
+    chunk_id = generate_chunk_id(content)
+    encoded_chunk_id = encode_doc_id(chunk_id)
+
+    _mock_get_doc_404("notes%2Fnew.md")
+    _mock_get_doc_404("%2Fnotes%2Fnew.md")
+
+    chunk_put = respx.put(f"{BASE}/{encoded_chunk_id}").mock(
+        side_effect=[
+            Response(409, json={"error": "conflict", "reason": "Document update conflict."}),
+            Response(201, json={"ok": True, "id": chunk_id, "rev": "3-live"}),
+        ]
+    )
+    respx.get(f"{BASE}/{encoded_chunk_id}").mock(
+        return_value=Response(200, json={"_id": chunk_id, "_rev": "2-deleted", "_deleted": True})
+    )
+    parent_put = respx.put(f"{BASE}/notes%2Fnew.md").mock(
+        return_value=Response(201, json={"ok": True, "rev": "1-doc"})
+    )
+
+    result = await client.write_note("Notes/new.md", content)
+
+    assert result is True
+    assert len(chunk_put.calls) == 2
+    resurrect_body = _json.loads(chunk_put.calls[1].request.content)
+    assert resurrect_body == {
+        "_id": chunk_id,
+        "_rev": "2-deleted",
+        "data": content,
+        "type": "leaf",
+    }
+    parent_body = _json.loads(parent_put.calls[0].request.content)
+    assert parent_body["children"] == [chunk_id]
 
 
 @respx.mock
