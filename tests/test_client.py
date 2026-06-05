@@ -383,8 +383,20 @@ async def test_write_note_resurrects_tombstoned_chunk_conflict(client):
             Response(201, json={"ok": True, "id": chunk_id, "rev": "3-live"}),
         ]
     )
-    respx.get(f"{BASE}/{encoded_chunk_id}").mock(
-        return_value=Response(200, json={"_id": chunk_id, "_rev": "2-deleted", "_deleted": True})
+    respx.post(f"{BASE}/_all_docs").mock(
+        return_value=Response(
+            200,
+            json={
+                "rows": [
+                    {
+                        "id": chunk_id,
+                        "key": chunk_id,
+                        "value": {"rev": "2-deleted", "deleted": True},
+                        "doc": None,
+                    }
+                ]
+            },
+        )
     )
     parent_put = respx.put(f"{BASE}/notes%2Fnew.md").mock(
         return_value=Response(201, json={"ok": True, "rev": "1-doc"})
