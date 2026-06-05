@@ -117,6 +117,61 @@ class ObsidianVaultClient(AttachmentOps):
                 result[row["id"]] = doc["data"]
         return result
 
+    async def _put_chunk_doc(self, chunk_id: str, chunk_data: str) -> None:
+        """Ensure a chunk doc exists and is live before any parent references it."""
+        client = await self._get_client()
+        encoded_id = encode_doc_id(chunk_id)
+        body = {"_id": chunk_id, "data": chunk_data, "type": "leaf"}
+
+        resp = await client.put(f"/{encoded_id}", json=body)
+        if resp.status_code != 409:
+            resp.raise_for_status()
+            return
+
+        existing = await self._get_chunk_doc_for_conflict(chunk_id)
+        doc = existing.get("doc") or {}
+        value = existing.get("value") or {}
+        if doc and not doc.get("_deleted"):
+            if doc.get("data") == chunk_data:
+                return
+            raise ValueError(f"Chunk ID collision for {chunk_id}")
+
+        rev = doc.get("_rev") or value.get("rev")
+        deleted = bool(doc.get("_deleted") or value.get("deleted"))
+        if not deleted:
+            retry_resp = await client.put(f"/{encoded_id}", json=body)
+            if retry_resp.status_code != 409:
+                retry_resp.raise_for_status()
+                return
+            raise ValueError(f"Chunk {chunk_id} conflicted but no live doc or tombstone exists")
+        if not rev:
+            raise ValueError(f"Chunk {chunk_id} conflicted without a reusable _rev")
+
+        resurrect_body = body | {"_rev": rev}
+        resurrect_resp = await client.put(f"/{encoded_id}", json=resurrect_body)
+        if resurrect_resp.status_code == 409:
+            verified = await self._get_chunk_doc_for_conflict(chunk_id)
+            verified_doc = verified.get("doc") or {}
+            if not verified_doc.get("_deleted") and verified_doc.get("data") == chunk_data:
+                return
+            raise ValueError(f"Chunk {chunk_id} changed during tombstone resurrection")
+        resurrect_resp.raise_for_status()
+
+    async def _get_chunk_doc_for_conflict(self, chunk_id: str) -> dict:
+        """Fetch live chunk data or deleted tombstone rev after a chunk 409."""
+        client = await self._get_client()
+        resp = await client.post(
+            "/_all_docs",
+            json={"keys": [chunk_id]},
+            params={"include_docs": "true"},
+        )
+        resp.raise_for_status()
+        rows = resp.json().get("rows", [])
+        if not rows:
+            return {}
+        row = rows[0]
+        return {} if row.get("error") == "not_found" else row
+
     async def _reassemble_binary(self, doc: dict, chunks: dict[str, str] | None = None) -> bytes:
         """Fetch and reassemble a binary doc's original bytes."""
         chunk_ids = doc.get("children", [])
@@ -352,13 +407,7 @@ class ObsidianVaultClient(AttachmentOps):
         chunk_ids = []
         for chunk_data in chunks_data:
             chunk_id = generate_chunk_id(chunk_data)
-            resp = await client.put(
-                f"/{encode_doc_id(chunk_id)}",
-                json={"_id": chunk_id, "data": chunk_data, "type": "leaf"},
-            )
-            # 409 is OK — chunk with same content hash already exists
-            if resp.status_code != 409:
-                resp.raise_for_status()
+            await self._put_chunk_doc(chunk_id, chunk_data)
             chunk_ids.append(chunk_id)
 
         now_ms = int(time.time() * 1000)
