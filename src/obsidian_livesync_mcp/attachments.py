@@ -182,7 +182,6 @@ class AttachmentOps:
             "type": "newnote",
             "eden": {},
         }
-        replaced_target_children = set(existing_new.get("children", [])) if existing_new else set()
         if existing_new:
             new_doc["_id"] = existing_new["_id"]
             new_doc["_rev"] = existing_new["_rev"]
@@ -230,13 +229,6 @@ class AttachmentOps:
                 notes_updated,
             )
             raise
-
-        replaced = replaced_target_children - set(new_doc.get("children", []))
-        if replaced:
-            in_use_elsewhere = await self._collect_chunks_in_use_by_other_docs(new_doc["_id"])
-            orphaned = replaced - in_use_elsewhere
-            if orphaned:
-                await self._delete_orphan_chunks(list(orphaned))
 
         return {
             "moved": True,

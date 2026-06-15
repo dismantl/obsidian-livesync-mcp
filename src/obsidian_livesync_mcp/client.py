@@ -5,6 +5,7 @@ import base64
 import logging
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 
 import httpx
 
@@ -39,12 +40,20 @@ BINARY_EXTENSIONS = {
     ".gz",
 }
 
-# read_note tolerates a chunk that is momentarily missing — mid-replication, or
-# cleaned up during a concurrent rewrite — by re-fetching the parent and retrying
-# a few times before failing. This mirrors the Obsidian app, which waits for
-# chunks rather than erroring on a transient gap.
+# read_note tolerates a chunk that is momentarily missing mid-replication, or
+# because a stale parent still references a chunk removed by explicit
+# maintenance/hard-delete cleanup. Re-fetch the parent and retry a few times
+# before failing, mirroring the Obsidian app's wait-for-chunks behavior.
 READ_RETRIES = 3
 READ_RETRY_DELAY = 0.25
+
+
+@dataclass
+class PruneReport:
+    total_chunks: int
+    referenced: int
+    orphan_chunk_ids: list[str]
+    deleted: int
 
 
 class ObsidianVaultClient(AttachmentOps):
@@ -184,9 +193,10 @@ class ObsidianVaultClient(AttachmentOps):
             raise ValueError(f"Missing {len(missing)} chunk(s) for {doc_id}: {missing[:3]}")
         return decode_binary_chunks([chunks[cid] for cid in chunk_ids])
 
-    async def _delete_orphan_chunks(self, chunk_ids: list[str]) -> None:
-        """Delete orphaned chunk documents. Best-effort: logs warnings on failure."""
+    async def _delete_orphan_chunks(self, chunk_ids: list[str]) -> int:
+        """Delete orphaned chunk documents and return the number deleted."""
         client = await self._get_client()
+        deleted = 0
         for chunk_id in chunk_ids:
             try:
                 resp = await client.get(f"/{encode_doc_id(chunk_id)}")
@@ -198,19 +208,23 @@ class ObsidianVaultClient(AttachmentOps):
                     )
                     if del_resp.status_code not in (200, 202):
                         logger.warning("Failed to delete orphan chunk %s", chunk_id)
+                    else:
+                        deleted += 1
                 elif resp.status_code != 404:
                     logger.warning(
                         "Failed to fetch orphan chunk %s: %s", chunk_id, resp.status_code
                     )
             except Exception:
                 logger.warning("Error cleaning up orphan chunk %s", chunk_id, exc_info=True)
+        return deleted
 
     async def _collect_chunks_in_use_by_other_docs(self, exclude_doc_id: str) -> set[str]:
         """Return all chunk IDs referenced by file docs other than exclude_doc_id.
 
         Chunks are content-addressed and deduplicated: two notes with identical
-        content share the same chunk ID. Orphan cleanup on write/delete must
-        consult this set before deleting a chunk, or it will break the other notes.
+        content share the same chunk ID. Hard-delete and explicit maintenance
+        cleanup must consult this set before deleting a chunk, or they can break
+        other notes.
         """
         all_docs = await self._get_all_file_docs(include_deleted=True)
         in_use: set[str] = set()
@@ -269,6 +283,44 @@ class ObsidianVaultClient(AttachmentOps):
 
         return docs
 
+    async def prune_orphan_chunks(self, *, dry_run: bool = True) -> PruneReport:
+        """Find chunk docs referenced by no live or soft-deleted file doc.
+
+        This is the MCP analog of upstream LiveSync's manual Garbage Collection:
+        deletion tombstones chunks, which is unsafe if another device still
+        references one. Sync all devices first before opting into deletion. This
+        scan inspects current file docs' children only, not document history or
+        other devices' pending writes, so prefer the app's own GC / rebuild path
+        when an Obsidian client is available.
+        """
+        client = await self._get_client()
+        resp = await client.get(
+            "/_all_docs",
+            params={
+                "startkey": '"h:"',
+                "endkey": '"h:~"',
+                "inclusive_end": "false",
+            },
+        )
+        resp.raise_for_status()
+        all_chunk_ids = [row["id"] for row in resp.json().get("rows", []) if "id" in row]
+
+        in_use: set[str] = set()
+        for doc in await self._get_all_file_docs(include_deleted=True):
+            in_use.update(doc.get("children", []))
+
+        orphan_chunk_ids = [chunk_id for chunk_id in all_chunk_ids if chunk_id not in in_use]
+        deleted = 0
+        if not dry_run and orphan_chunk_ids:
+            deleted = await self._delete_orphan_chunks(orphan_chunk_ids)
+
+        return PruneReport(
+            total_chunks=len(all_chunk_ids),
+            referenced=len(all_chunk_ids) - len(orphan_chunk_ids),
+            orphan_chunk_ids=orphan_chunk_ids,
+            deleted=deleted,
+        )
+
     # ── Read operations ────────────────────────────────────────────
 
     async def list_notes(
@@ -309,13 +361,12 @@ class ObsidianVaultClient(AttachmentOps):
     ) -> NoteContent | None:
         """Read a note's full content by reassembling chunks in order.
 
-        A note written concurrently can momentarily reference a chunk that is
-        still mid-replication, or one that was just cleaned up during a rewrite
-        (the reader holds a stale parent while a writer swapped it and deleted
-        the old chunk). Rather than fail on that transient gap — unlike the
-        Obsidian app, which waits for chunks — re-fetch the parent fresh (so a
-        rewrite's new ``children`` get resolved) and retry up to ``retries``
-        times, ``retry_delay`` seconds apart.
+        A note written or repaired concurrently can momentarily reference a
+        chunk that is still mid-replication. A stale parent can also reference a
+        chunk removed by explicit maintenance. Rather than fail on that
+        transient gap — unlike the Obsidian app, which waits for chunks —
+        re-fetch the parent fresh and retry up to ``retries`` times,
+        ``retry_delay`` seconds apart.
 
         Raises ValueError only if chunks are still missing after the final
         attempt (e.g. a genuinely broken manifest). For bulk scans that should
@@ -414,7 +465,6 @@ class ObsidianVaultClient(AttachmentOps):
 
         # Check existing doc
         existing = await self._get_doc(vault_path)
-        old_children = set(existing.get("children", [])) if existing else set()
         if expected_rev and (not existing or existing.get("_rev") != expected_rev):
             raise ValueError(f"File changed during write: {vault_path}")
 
@@ -457,16 +507,11 @@ class ObsidianVaultClient(AttachmentOps):
             resp = await client.put(f"/{encoded_id}", json=new_doc)
             resp.raise_for_status()
 
-        # Clean up orphaned chunks (best-effort). Chunks are content-addressed
-        # and shared between notes, so we must exclude any still referenced
-        # elsewhere or we'll corrupt other notes.
-        new_children = set(chunk_ids)
-        removed = old_children - new_children
-        if removed:
-            in_use_elsewhere = await self._collect_chunks_in_use_by_other_docs(doc_id)
-            truly_orphaned = removed - in_use_elsewhere
-            if truly_orphaned:
-                await self._delete_orphan_chunks(list(truly_orphaned))
+        # NOTE: Automatic orphan-chunk deletion was intentionally removed
+        # (2026-06-15). Deleting content-addressed chunks creates CouchDB
+        # tombstones that can break other notes and are sticky at the
+        # replication layer. Pruning is now an explicit, dry-run-default
+        # maintenance command; see prune_orphan_chunks / CLI prune-orphans.
 
         return True
 
