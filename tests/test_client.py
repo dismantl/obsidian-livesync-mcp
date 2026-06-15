@@ -439,6 +439,63 @@ async def test_write_note_resurrects_tombstoned_chunk_conflict(client):
 
 
 @respx.mock
+async def test_write_resurrects_tombstoned_chunk(client):
+    """A needed tombstoned chunk must be PUT with its reusable tombstone rev."""
+    import json as _json
+
+    chunk_route = respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
+        side_effect=[
+            Response(409, json={"error": "conflict"}),
+            Response(201, json={"ok": True, "rev": "3-live"}),
+        ]
+    )
+    respx.post(f"{BASE}/_all_docs").mock(
+        return_value=Response(
+            200,
+            json={
+                "rows": [
+                    {
+                        "id": "h:x",
+                        "value": {"rev": "2-dead", "deleted": True},
+                        "doc": {"_id": "h:x", "_rev": "2-dead", "_deleted": True},
+                    }
+                ]
+            },
+        )
+    )
+    _mock_get_doc_404(encode_doc_id("context/new.md"))
+    _mock_get_doc_404(encode_doc_id("/context/new.md"))
+    respx.put(f"{BASE}/{encode_doc_id('context/new.md')}").mock(
+        return_value=Response(201, json={"ok": True})
+    )
+
+    await client.write_note("Context/new.md", "x")
+
+    resurrect_body = _json.loads(chunk_route.calls[-1].request.content)
+    assert resurrect_body["_rev"] == "2-dead"
+
+
+@respx.mock
+async def test_parent_put_happens_after_chunk_puts(client):
+    """The parent doc must be PUT only after all chunk PUTs succeed."""
+    order = []
+    respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
+        side_effect=lambda request: order.append("chunk") or Response(201, json={"ok": True})
+    )
+    parent_id = encode_doc_id("context/ordered.md")
+    _mock_get_doc_404(parent_id)
+    _mock_get_doc_404(encode_doc_id("/context/ordered.md"))
+    respx.put(f"{BASE}/{parent_id}").mock(
+        side_effect=lambda request: order.append("parent") or Response(201, json={"ok": True})
+    )
+
+    await client.write_note("Context/ordered.md", "some content body here")
+
+    assert order[-1] == "parent", "parent must be written last"
+    assert order.count("chunk") >= 1
+
+
+@respx.mock
 async def test_write_note_409_conflict_retry(client):
     existing = _make_parent_doc("notes/todo.md", ["h:oldchunk0000"])
 

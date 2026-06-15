@@ -126,6 +126,10 @@ class ObsidianVaultClient(AttachmentOps):
                 result[row["id"]] = doc["data"]
         return result
 
+    # INVARIANT: every chunk a parent will reference is PUT/resurrected-live by
+    # _put_chunk_doc before the parent doc is written (see _write_file_doc).
+    # Never publish a parent whose children[] includes a non-live chunk.
+    # Regression-tested in tests/test_client.py.
     async def _put_chunk_doc(self, chunk_id: str, chunk_data: str) -> None:
         """Ensure a chunk doc exists and is live before any parent references it."""
         client = await self._get_client()
