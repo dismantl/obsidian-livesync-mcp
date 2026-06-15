@@ -349,8 +349,6 @@ async def test_write_note_new(client):
 async def test_write_note_update_existing(client):
     existing = _make_parent_doc("notes/todo.md", ["h:oldchunk0000"])
     _mock_get_doc("notes%2Ftodo.md", existing)
-    # Reference scan for orphan cleanup: only this doc in the vault
-    _mock_get_all_file_docs([existing])
 
     # Chunk creation
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
@@ -376,10 +374,6 @@ async def test_write_does_not_delete_orphan_chunks(client):
     existing = _make_parent_doc(doc_id, ["h:oldchunk1", "h:oldchunk2"], _rev="5-old")
 
     _mock_get_doc(encode_doc_id(doc_id), existing)
-    respx.get(url__regex=rf"{BASE}/_all_docs.*").mock(return_value=Response(200, json={"rows": []}))
-    respx.get(url__regex=rf"{BASE}/h%3Aoldchunk.*").mock(
-        return_value=Response(200, json={"_id": "h:oldchunk1", "_rev": "2-x"})
-    )
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(return_value=Response(201, json={"ok": True}))
     respx.put(f"{BASE}/{encode_doc_id(doc_id)}").mock(return_value=Response(201, json={"ok": True}))
 
@@ -450,8 +444,6 @@ async def test_write_note_409_conflict_retry(client):
 
     # First GET returns existing doc
     _mock_get_doc("notes%2Ftodo.md", existing)
-    # Reference scan for orphan cleanup
-    _mock_get_all_file_docs([existing])
 
     # Chunk creation
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
@@ -513,12 +505,9 @@ async def test_write_note_preserves_shared_chunk(client):
     a_only_id = "h:aonly0000000"
 
     old_a = _make_parent_doc("notes/a.md", [shared_id, a_only_id])
-    note_b = _make_parent_doc("notes/b.md", [shared_id])
 
     # write_note will GET the existing doc A
     _mock_get_doc("notes%2Fa.md", old_a)
-    # Reference check after fix: returns both A and B so shared_id is seen as in-use
-    _mock_get_all_file_docs([old_a, note_b])
 
     # New chunks for updated A content
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
@@ -529,15 +518,9 @@ async def test_write_note_preserves_shared_chunk(client):
         return_value=Response(200, json={"ok": True, "rev": "2-updated"})
     )
 
-    # Mock the orphan cleanup path for BOTH chunks so failures are visible
-    respx.get(f"{BASE}/{shared_id.replace(':', '%3A')}").mock(
-        return_value=Response(200, json={"_id": shared_id, "_rev": "1-s"})
-    )
+    # Routes that would catch any write-path chunk deletion.
     shared_delete = respx.delete(f"{BASE}/{shared_id.replace(':', '%3A')}").mock(
         return_value=Response(200, json={"ok": True})
-    )
-    respx.get(f"{BASE}/{a_only_id.replace(':', '%3A')}").mock(
-        return_value=Response(200, json={"_id": a_only_id, "_rev": "1-a"})
     )
     a_only_delete = respx.delete(f"{BASE}/{a_only_id.replace(':', '%3A')}").mock(
         return_value=Response(200, json={"ok": True})
@@ -900,9 +883,8 @@ async def test_delete_note_hard_409_already_deleted(client):
 async def test_delete_note_hard_preserves_shared_chunk(client):
     """Hard-deleting note A must not delete chunks still referenced by note B.
 
-    Same dedup bug shape as the write_note orphan cleanup — the delete path
-    unconditionally removes every chunk in the deleted note's manifest without
-    checking whether other notes still reference those chunks.
+    Hard-delete is the remaining write path that can remove chunk docs. It must
+    check whether other notes still reference a chunk before deleting it.
     """
     shared_id = "h:shared000000"
     a_only_id = "h:aonly0000000"
@@ -1097,8 +1079,6 @@ async def test_update_frontmatter_merge(client):
     doc = _make_parent_doc("notes/fm.md", ["h:fmchunk00000"])
     _mock_get_doc("notes%2Ffm.md", doc)
     _mock_all_docs({"h:fmchunk00000": content})
-    # Reference scan for orphan cleanup in write_note
-    _mock_get_all_file_docs([doc])
 
     # write_note will: create chunk, then update parent
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
@@ -1351,7 +1331,6 @@ async def test_write_note_leaves_orphan_chunks_for_explicit_prune(client):
     """Updating a note leaves dropped chunks for explicit maintenance pruning."""
     existing = _make_parent_doc("notes/todo.md", ["h:oldchunk0000"])
     _mock_get_doc("notes%2Ftodo.md", existing)
-    _mock_get_all_file_docs([existing])
 
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
         return_value=Response(201, json={"ok": True, "rev": "1-new"})
@@ -1376,7 +1355,6 @@ async def test_write_note_does_not_probe_dropped_chunks_for_cleanup(client):
     """Dropped chunk cleanup is no longer attempted from the write path."""
     existing = _make_parent_doc("notes/todo.md", ["h:oldchunk0000"])
     _mock_get_doc("notes%2Ftodo.md", existing)
-    _mock_get_all_file_docs([existing])
 
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
         return_value=Response(201, json={"ok": True, "rev": "1-new"})
