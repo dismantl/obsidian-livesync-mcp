@@ -1,13 +1,18 @@
-"""Rabin-Karp content-defined chunking matching LiveSync V3.
+"""Rabin-Karp content-defined chunking matching LiveSync v3 fixed-size sizing.
 
-Splits content into chunks using a rolling hash, producing identical
-chunk boundaries to LiveSync's default chunkSplitterVersion="v3-rabin-karp".
+Boundary detection uses a rolling hash identical to LiveSync's
+chunkSplitterVersion="v3-rabin-karp". Chunk sizing mirrors upstream's
+fixed-unit model as of livesync-commonlib commit
+6abcea69eb929ea261308b543ac42cd54a00eee2 (LiveSync 0.25.65+, verified against
+installed plugin 0.25.73). Parity is enforced by golden fixtures in
+tests/fixtures; see tests/fixtures/REFRESH.md before changing constants.
 """
 
 import base64
 
 # LiveSync constants from shared.const.behabiour.ts
 MAX_DOC_SIZE_BIN = 102400  # 100KB
+DEFAULT_MINIMUM_CHUNK_SIZE = 20  # plugin default; usually dominated by fixed_min
 
 # Rabin-Karp parameters from chunks.ts splitPiecesRabinKarp
 PRIME = 31
@@ -40,6 +45,7 @@ def split_chunks(
     data: bytes,
     is_text: bool,
     absolute_max_piece_size: int = MAX_DOC_SIZE_BIN,
+    minimum_chunk_size: int = DEFAULT_MINIMUM_CHUNK_SIZE,
 ) -> list[str]:
     """Split data into chunks using Rabin-Karp content-defined chunking.
 
@@ -47,6 +53,7 @@ def split_chunks(
         data: Raw bytes to split (UTF-8 encoded text or raw binary).
         is_text: True for text files, False for binary.
         absolute_max_piece_size: Hard upper limit on chunk size in bytes.
+        minimum_chunk_size: User-configured minimum chunk size.
 
     Returns:
         List of chunk content strings. Text chunks are UTF-8 decoded strings.
@@ -56,12 +63,32 @@ def split_chunks(
     if length == 0:
         return []
 
-    # Compute chunk sizing parameters (matching LiveSync exactly)
-    min_piece_size = 128 if is_text else 4096
-    split_piece_count = 20 if is_text else 12
-    avg_chunk_size = max(min_piece_size, length // split_piece_count)
-    max_chunk_size = min(absolute_max_piece_size, avg_chunk_size * 5)
-    min_chunk_size = min(max(avg_chunk_size // 4, 1), max_chunk_size)
+    # Fixed-size sizing model (LiveSync v3; commonlib 6abcea69).
+    # Sizing uses fixed unit targets, not file-size-derived averages, so chunk
+    # boundaries are stable across file sizes and support fine-grained dedupe.
+    # plain_split governs sizing and may flip to binary for very large text;
+    # is_text still governs UTF-8-safe boundary placement below.
+    plain_split = is_text
+    chunk_unit_plain = 64
+    max_chunk_count = 500
+    if plain_split:
+        if length >= 4 * 1024 * 1024:
+            plain_split = False
+        else:
+            while length / (chunk_unit_plain * 4) > max_chunk_count:
+                chunk_unit_plain += 32
+
+    chunk_unit_binary = 256 * 1024
+
+    fixed_avg = chunk_unit_plain * 4 if plain_split else chunk_unit_binary * 4
+    fixed_max = chunk_unit_plain * 16 if plain_split else chunk_unit_binary * 16
+    fixed_min = chunk_unit_plain * 2 if plain_split else chunk_unit_binary
+
+    rk_absolute_max_floor = 30 * 1024
+    effective_absolute_max = max(absolute_max_piece_size, rk_absolute_max_floor)
+    max_chunk_size = min(fixed_max, effective_absolute_max)
+    min_chunk_size = min(max(fixed_min, minimum_chunk_size), max_chunk_size)
+    avg_chunk_size = min(max(fixed_avg, min_chunk_size), max_chunk_size)
     hash_modulus = avg_chunk_size
 
     # Precompute PRIME^(WINDOW_SIZE-1) using 32-bit integer math
