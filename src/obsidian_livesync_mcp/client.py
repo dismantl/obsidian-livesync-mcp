@@ -222,8 +222,9 @@ class ObsidianVaultClient(AttachmentOps):
         """Return all chunk IDs referenced by file docs other than exclude_doc_id.
 
         Chunks are content-addressed and deduplicated: two notes with identical
-        content share the same chunk ID. Orphan cleanup on write/delete must
-        consult this set before deleting a chunk, or it will break the other notes.
+        content share the same chunk ID. Hard-delete and explicit maintenance
+        cleanup must consult this set before deleting a chunk, or they can break
+        other notes.
         """
         all_docs = await self._get_all_file_docs(include_deleted=True)
         in_use: set[str] = set()
@@ -360,13 +361,12 @@ class ObsidianVaultClient(AttachmentOps):
     ) -> NoteContent | None:
         """Read a note's full content by reassembling chunks in order.
 
-        A note written concurrently can momentarily reference a chunk that is
-        still mid-replication, or one that was just cleaned up during a rewrite
-        (the reader holds a stale parent while a writer swapped it and deleted
-        the old chunk). Rather than fail on that transient gap — unlike the
-        Obsidian app, which waits for chunks — re-fetch the parent fresh (so a
-        rewrite's new ``children`` get resolved) and retry up to ``retries``
-        times, ``retry_delay`` seconds apart.
+        A note written or repaired concurrently can momentarily reference a
+        chunk that is still mid-replication. A stale parent can also reference a
+        chunk removed by explicit maintenance. Rather than fail on that
+        transient gap — unlike the Obsidian app, which waits for chunks —
+        re-fetch the parent fresh and retry up to ``retries`` times,
+        ``retry_delay`` seconds apart.
 
         Raises ValueError only if chunks are still missing after the final
         attempt (e.g. a genuinely broken manifest). For bulk scans that should
