@@ -93,8 +93,8 @@ Understanding this is essential for working on `client.py`, `utils.py`, or `chun
 
 - Each note is stored as a **parent document** (CouchDB doc with `_id` = lowercased vault path) containing a `children` array of chunk IDs.
 - **Chunk documents** hold the actual content (`_id` = `"h:" + xxhash64_base36`, `type` = `"leaf"`). Chunk IDs are content-hash based — same content always produces the same ID.
-- Content is split using **Rabin-Karp V3** content-defined chunking (PRIME=31, window=48 bytes, boundary when `hash % avgChunkSize == 1`). Text avg chunk = max(128B, size/20). Binary avg chunk = max(4KB, size/12).
-- Current upstream LiveSync uses larger fixed target sizes for Rabin-Karp chunks. This repo's older sizing is format-compatible and readable, but boundaries can differ, reducing dedupe with chunks created by the app.
+- Content is split using **Rabin-Karp V3** content-defined chunking (PRIME=31, window=48 bytes, boundary when `hash % avgChunkSize == 1`) with LiveSync's fixed-unit sizing model. Current normal text targets 256 B average / 1 KiB max chunks; binary and very large text use the binary sizing path capped by LiveSync's 100 KiB document-size limit.
+- Chunking parity is pinned by golden fixtures under `tests/fixtures`. Refresh them only when intentionally tracking a new upstream LiveSync/commonlib version.
 - Binary chunks are independently base64-encoded byte ranges. Reassembly must decode each chunk and concatenate bytes; concatenating base64 strings corrupts multi-chunk binaries.
 - Attachments are binary parent docs with `type="newnote"`. Text notes use `type="plain"`.
 - Legacy documents (type `"notes"`) store content directly in a `data` field instead of chunks.

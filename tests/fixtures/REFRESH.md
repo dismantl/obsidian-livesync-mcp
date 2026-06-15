@@ -17,6 +17,11 @@ them only when intentionally tracking a new upstream LiveSync version.
 4. Commit the changed JSON alongside `chunking.py`, bumping the `source` and
    `captured` fields.
 
-Do not fetch upstream or run the app during CI. Committed fixtures must be
-reproducible offline; the app or upstream-JS step happens only when refreshing
-the fixtures.
+Normal PR CI should test against the committed fixtures so unrelated changes
+stay tied to the LiveSync version this repository intentionally targets. To
+detect latest-upstream drift, run a separate scheduled or manual canary that
+fetches the current plugin/commonlib or runs the Obsidian app, captures fresh
+chunk IDs for these same bytes, and compares them to the committed expectations
+without rewriting the JSON. A canary failure is a compatibility signal to
+review; refresh the fixtures only after deciding to track that newer upstream
+behavior.

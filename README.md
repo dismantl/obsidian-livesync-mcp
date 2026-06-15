@@ -297,8 +297,8 @@ These settings can be any value — reads always work, writes use LiveSync defau
 | Setting | Our Behavior |
 |---------|-------------|
 | `hashAlg` | Writes use `xxhash64` (LiveSync default). Reads work with any hash algorithm. |
-| `chunkSplitterVersion` | Writes use Rabin-Karp-compatible chunks. Reads work with any splitter. |
-| `customChunkSize` | Reads work with any chunk size. Write boundaries may differ from current LiveSync defaults, which affects dedupe but not readability. |
+| `chunkSplitterVersion` | Writes use LiveSync v3 Rabin-Karp chunks. Reads work with any splitter. |
+| `customChunkSize` | Reads work with any chunk size. Writes follow LiveSync v3 fixed-unit sizing, so this setting does not change write boundaries. |
 | `useEden` | Deprecated. Ignored on read, writes set `eden: {}`. |
 
 ### Unsupported Features
