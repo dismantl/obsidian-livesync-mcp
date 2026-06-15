@@ -493,7 +493,7 @@ async def test_move_attachment_rollback_preserves_concurrent_replaced_target_upd
     assert client.docs["media/new.png"]["size"] == 42
 
 
-async def test_move_attachment_replacing_soft_deleted_target_cleans_stale_chunks():
+async def test_move_attachment_replacing_soft_deleted_target_leaves_stale_chunks_for_prune():
     client = _MemoryAttachmentClient(
         [
             _doc("Attachments/old.png", "newnote", children=["h:new"]),
@@ -509,7 +509,7 @@ async def test_move_attachment_replacing_soft_deleted_target_cleans_stale_chunks
     await client.move_attachment("Attachments/old.png", "Media/new.png")
 
     assert client.docs["media/new.png"]["children"] == ["h:new"]
-    assert client.deleted_chunks == ["h:stale"]
+    assert client.deleted_chunks == []
 
 
 async def test_move_attachment_rejects_livesync_plain_text_target():

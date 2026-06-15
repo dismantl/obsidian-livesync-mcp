@@ -238,6 +238,8 @@ obsidian append "Notes/log.md" "New entry"
 # Delete a note
 obsidian delete "Notes/old.md"
 obsidian rm "Notes/old.md" -y            # skip confirmation
+obsidian prune-orphans                   # dry-run orphan chunk scan
+obsidian prune-orphans --delete          # delete only after all devices are synced
 
 # Frontmatter properties
 obsidian props "Notes/todo.md"                      # read properties
