@@ -1416,6 +1416,48 @@ async def test_prune_orphan_chunks_dry_run_lists_but_does_not_delete(client):
     assert not delete_route.called
 
 
+@respx.mock
+async def test_prune_orphan_chunks_counts_successful_deletes(client):
+    parent = _make_parent_doc("notes/a.md", ["h:used"])
+    respx.get(f"{BASE}/_all_docs").mock(
+        side_effect=[
+            Response(
+                200,
+                json={
+                    "rows": [
+                        {"id": "h:used"},
+                        {"id": "h:delete"},
+                        {"id": "h:fail"},
+                        {"id": "h:missing"},
+                    ]
+                },
+            ),
+            Response(200, json={"rows": [{"doc": parent}]}),
+            Response(200, json={"rows": []}),
+        ]
+    )
+    respx.get(f"{BASE}/h%3Adelete").mock(
+        return_value=Response(200, json={"_id": "h:delete", "_rev": "1-delete"})
+    )
+    respx.get(f"{BASE}/h%3Afail").mock(
+        return_value=Response(200, json={"_id": "h:fail", "_rev": "1-fail"})
+    )
+    respx.get(f"{BASE}/h%3Amissing").mock(return_value=Response(404, json={"error": "not_found"}))
+    delete_route = respx.delete(f"{BASE}/h%3Adelete").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    fail_route = respx.delete(f"{BASE}/h%3Afail").mock(
+        return_value=Response(500, json={"error": "server_error"})
+    )
+
+    report = await client.prune_orphan_chunks(dry_run=False)
+
+    assert report.orphan_chunk_ids == ["h:delete", "h:fail", "h:missing"]
+    assert report.deleted == 1
+    assert delete_route.called
+    assert fail_route.called
+
+
 # ── soft-delete filtering ────────────────────────────────────────
 
 

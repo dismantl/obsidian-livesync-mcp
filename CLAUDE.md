@@ -99,7 +99,7 @@ Understanding this is essential for working on `client.py`, `utils.py`, or `chun
 - Attachments are binary parent docs with `type="newnote"`. Text notes use `type="plain"`.
 - Legacy documents (type `"notes"`) store content directly in a `data` field instead of chunks.
 - Paths starting with `_` (e.g., `_Changelog/`) get a `/` prefix because CouchDB reserves `_`-prefixed IDs.
-- Reads must reassemble chunks in order. Writes must create chunk docs before the parent. Updates clean up orphaned chunks. Deletes default to LiveSync-compatible soft-delete; hard-delete is opt-in for broken-manifest cleanup.
+- Reads must reassemble chunks in order. Writes must create chunk docs before the parent. Normal updates do not delete dropped chunks; orphan pruning is explicit maintenance. Deletes default to LiveSync-compatible soft-delete; hard-delete is opt-in for broken-manifest cleanup.
 
 ### Required LiveSync Settings
 

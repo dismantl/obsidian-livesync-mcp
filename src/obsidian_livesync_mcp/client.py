@@ -193,9 +193,10 @@ class ObsidianVaultClient(AttachmentOps):
             raise ValueError(f"Missing {len(missing)} chunk(s) for {doc_id}: {missing[:3]}")
         return decode_binary_chunks([chunks[cid] for cid in chunk_ids])
 
-    async def _delete_orphan_chunks(self, chunk_ids: list[str]) -> None:
-        """Delete orphaned chunk documents. Best-effort: logs warnings on failure."""
+    async def _delete_orphan_chunks(self, chunk_ids: list[str]) -> int:
+        """Delete orphaned chunk documents and return the number deleted."""
         client = await self._get_client()
+        deleted = 0
         for chunk_id in chunk_ids:
             try:
                 resp = await client.get(f"/{encode_doc_id(chunk_id)}")
@@ -207,12 +208,15 @@ class ObsidianVaultClient(AttachmentOps):
                     )
                     if del_resp.status_code not in (200, 202):
                         logger.warning("Failed to delete orphan chunk %s", chunk_id)
+                    else:
+                        deleted += 1
                 elif resp.status_code != 404:
                     logger.warning(
                         "Failed to fetch orphan chunk %s: %s", chunk_id, resp.status_code
                     )
             except Exception:
                 logger.warning("Error cleaning up orphan chunk %s", chunk_id, exc_info=True)
+        return deleted
 
     async def _collect_chunks_in_use_by_other_docs(self, exclude_doc_id: str) -> set[str]:
         """Return all chunk IDs referenced by file docs other than exclude_doc_id.
@@ -307,8 +311,7 @@ class ObsidianVaultClient(AttachmentOps):
         orphan_chunk_ids = [chunk_id for chunk_id in all_chunk_ids if chunk_id not in in_use]
         deleted = 0
         if not dry_run and orphan_chunk_ids:
-            await self._delete_orphan_chunks(orphan_chunk_ids)
-            deleted = len(orphan_chunk_ids)
+            deleted = await self._delete_orphan_chunks(orphan_chunk_ids)
 
         return PruneReport(
             total_chunks=len(all_chunk_ids),
