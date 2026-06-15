@@ -4,6 +4,7 @@ import pytest
 import respx
 from httpx import Response
 
+from obsidian_livesync_mcp.chunking import split_chunks
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 from obsidian_livesync_mcp.config import Config
 from obsidian_livesync_mcp.utils import encode_doc_id, generate_chunk_id
@@ -443,21 +444,23 @@ async def test_write_resurrects_tombstoned_chunk(client):
     """A needed tombstoned chunk must be PUT with its reusable tombstone rev."""
     import json as _json
 
-    chunk_route = respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
+    content = "x"
+    chunk_id = generate_chunk_id(content)
+    chunk_route = respx.put(f"{BASE}/{encode_doc_id(chunk_id)}").mock(
         side_effect=[
             Response(409, json={"error": "conflict"}),
             Response(201, json={"ok": True, "rev": "3-live"}),
         ]
     )
-    respx.post(f"{BASE}/_all_docs").mock(
+    tombstone_lookup = respx.post(f"{BASE}/_all_docs").mock(
         return_value=Response(
             200,
             json={
                 "rows": [
                     {
-                        "id": "h:x",
+                        "id": chunk_id,
                         "value": {"rev": "2-dead", "deleted": True},
-                        "doc": {"_id": "h:x", "_rev": "2-dead", "_deleted": True},
+                        "doc": {"_id": chunk_id, "_rev": "2-dead", "_deleted": True},
                     }
                 ]
             },
@@ -469,8 +472,10 @@ async def test_write_resurrects_tombstoned_chunk(client):
         return_value=Response(201, json={"ok": True})
     )
 
-    await client.write_note("Context/new.md", "x")
+    await client.write_note("Context/new.md", content)
 
+    lookup_body = _json.loads(tombstone_lookup.calls[0].request.content)
+    assert lookup_body["keys"] == [chunk_id]
     resurrect_body = _json.loads(chunk_route.calls[-1].request.content)
     assert resurrect_body["_rev"] == "2-dead"
 
@@ -479,6 +484,9 @@ async def test_write_resurrects_tombstoned_chunk(client):
 async def test_parent_put_happens_after_chunk_puts(client):
     """The parent doc must be PUT only after all chunk PUTs succeed."""
     order = []
+    content = "some content body here\n" * 200
+    expected_chunks = split_chunks(content.encode("utf-8"), is_text=True)
+    assert len(expected_chunks) > 1
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
         side_effect=lambda request: order.append("chunk") or Response(201, json={"ok": True})
     )
@@ -489,10 +497,10 @@ async def test_parent_put_happens_after_chunk_puts(client):
         side_effect=lambda request: order.append("parent") or Response(201, json={"ok": True})
     )
 
-    await client.write_note("Context/ordered.md", "some content body here")
+    await client.write_note("Context/ordered.md", content)
 
     assert order[-1] == "parent", "parent must be written last"
-    assert order.count("chunk") >= 1
+    assert order == ["chunk"] * len(expected_chunks) + ["parent"]
 
 
 @respx.mock
