@@ -40,10 +40,10 @@ BINARY_EXTENSIONS = {
     ".gz",
 }
 
-# read_note tolerates a chunk that is momentarily missing — mid-replication, or
-# cleaned up during a concurrent rewrite — by re-fetching the parent and retrying
-# a few times before failing. This mirrors the Obsidian app, which waits for
-# chunks rather than erroring on a transient gap.
+# read_note tolerates a chunk that is momentarily missing mid-replication, or
+# because a stale parent still references a chunk removed by explicit
+# maintenance/hard-delete cleanup. Re-fetch the parent and retry a few times
+# before failing, mirroring the Obsidian app's wait-for-chunks behavior.
 READ_RETRIES = 3
 READ_RETRY_DELAY = 0.25
 
