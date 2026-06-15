@@ -88,6 +88,22 @@ async def _cmd_delete(client: ObsidianVaultClient, args):
     print(f"Deleted: {args.path}" + (" (hard)" if args.hard else ""))
 
 
+async def _cmd_prune_orphans(client: ObsidianVaultClient, args):
+    report = await client.prune_orphan_chunks(dry_run=not args.delete)
+    print(
+        f"Chunks: {report.total_chunks} total, {report.referenced} referenced, "
+        f"{len(report.orphan_chunk_ids)} orphaned"
+    )
+    for chunk_id in report.orphan_chunk_ids[:50]:
+        print(f"  {chunk_id}")
+    if len(report.orphan_chunk_ids) > 50:
+        print(f"  ... and {len(report.orphan_chunk_ids) - 50} more")
+    if args.delete:
+        print(f"Deleted {report.deleted} orphan chunk(s) (now tombstoned).")
+    else:
+        print("Dry run - nothing deleted. Re-run with --delete to remove.")
+
+
 async def _cmd_props(client: ObsidianVaultClient, args):
     if args.set:
         properties = {}
@@ -244,7 +260,7 @@ async def _cmd_attach(client: ObsidianVaultClient, args):
         )
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="obsidian",
         description="Obsidian vault CLI via CouchDB LiveSync",
@@ -288,6 +304,17 @@ def main():
         help="Hard-delete (CouchDB tombstone + chunk cleanup). Default is a "
         "livesync-compatible soft-delete. Use --hard only for broken-manifest "
         "cleanup; it does NOT propagate to filesystem copies on livesync devices.",
+    )
+
+    # prune-orphans
+    p_prune = sub.add_parser(
+        "prune-orphans", help="List (default) or delete unreferenced chunk docs"
+    )
+    p_prune.add_argument(
+        "--delete",
+        action="store_true",
+        help="Actually delete orphan chunks. WARNING: creates CouchDB tombstones. "
+        "Default is a dry run that only lists them.",
     )
 
     # props
@@ -345,6 +372,11 @@ def main():
     a_mv.add_argument("new", help="New vault path")
     a_mv.add_argument("--no-rewrite", action="store_true", help="Do not rewrite references")
 
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     cmd_map = {
@@ -358,6 +390,7 @@ def main():
         "append": _cmd_append,
         "delete": _cmd_delete,
         "rm": _cmd_delete,
+        "prune-orphans": _cmd_prune_orphans,
         "props": _cmd_props,
         "tags": _cmd_tags,
         "backlinks": _cmd_backlinks,

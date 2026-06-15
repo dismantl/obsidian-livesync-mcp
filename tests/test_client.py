@@ -366,6 +366,33 @@ async def test_write_note_update_existing(client):
 
 
 @respx.mock
+async def test_write_does_not_delete_orphan_chunks(client):
+    """Updating a note must NOT issue DELETE on chunks dropped from the parent.
+
+    Auto-deletion tombstones content-addressed chunks, which can break other
+    notes and is the suspected cause of the 2026-06-15 tombstone incident.
+    """
+    doc_id = "context/note.md"
+    existing = _make_parent_doc(doc_id, ["h:oldchunk1", "h:oldchunk2"], _rev="5-old")
+
+    _mock_get_doc(encode_doc_id(doc_id), existing)
+    respx.get(url__regex=rf"{BASE}/_all_docs.*").mock(return_value=Response(200, json={"rows": []}))
+    respx.get(url__regex=rf"{BASE}/h%3Aoldchunk.*").mock(
+        return_value=Response(200, json={"_id": "h:oldchunk1", "_rev": "2-x"})
+    )
+    respx.put(url__regex=rf"{BASE}/h%3A.*").mock(return_value=Response(201, json={"ok": True}))
+    respx.put(f"{BASE}/{encode_doc_id(doc_id)}").mock(return_value=Response(201, json={"ok": True}))
+
+    delete_route = respx.delete(url__regex=rf"{BASE}/h%3A.*").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+
+    await client.write_note("Context/note.md", "completely new content body")
+
+    assert not delete_route.called, "write_note must not DELETE any chunk doc"
+
+
+@respx.mock
 async def test_write_note_resurrects_tombstoned_chunk_conflict(client):
     """A chunk 409 can mean a deleted CouchDB tombstone, not live chunk data."""
     import json as _json
@@ -476,11 +503,11 @@ async def test_write_note_409_deleted_during_write(client):
 
 @respx.mock
 async def test_write_note_preserves_shared_chunk(client):
-    """Updating note A must not delete chunks still referenced by note B.
+    """Updating note A must not delete dropped chunks, shared or unshared.
 
-    Chunks are content-addressed and deduplicated across notes — two notes with
-    identical content share the same chunk ID. Orphan cleanup that doesn't check
-    cross-note references causes data loss in the other note.
+    Chunks are content-addressed and CouchDB tombstones are sticky at the
+    replication layer. Write-time chunk deletion is unsafe even when a chunk
+    appears to be unreferenced.
     """
     shared_id = "h:shared000000"
     a_only_id = "h:aonly0000000"
@@ -519,13 +546,11 @@ async def test_write_note_preserves_shared_chunk(client):
     result = await client.write_note("Notes/a.md", "completely different new content")
     assert result is True
 
-    # The shared chunk must NOT be deleted — note B still references it
     assert not shared_delete.called, (
         "Shared chunk was deleted despite being referenced by another note — "
         "this is the dedup data-loss bug"
     )
-    # The truly-orphaned chunk (only A referenced it) SHOULD still be cleaned up
-    assert a_only_delete.called, "Truly-orphaned chunk was not cleaned up"
+    assert not a_only_delete.called, "write_note must not delete dropped chunk docs"
 
 
 # ── append_note ───────────────────────────────────────────────────
@@ -1322,59 +1347,73 @@ async def test_list_notes_includes_legacy_type(client):
 
 
 @respx.mock
-async def test_write_note_cleans_up_orphan_chunks(client):
-    """Updating a note should delete old chunks no longer referenced."""
+async def test_write_note_leaves_orphan_chunks_for_explicit_prune(client):
+    """Updating a note leaves dropped chunks for explicit maintenance pruning."""
     existing = _make_parent_doc("notes/todo.md", ["h:oldchunk0000"])
     _mock_get_doc("notes%2Ftodo.md", existing)
-    # Reference scan: only this doc, so the old chunk is truly orphaned
     _mock_get_all_file_docs([existing])
 
-    # New chunk creation
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
         return_value=Response(201, json={"ok": True, "rev": "1-new"})
     )
-    # Parent doc update
     respx.put(f"{BASE}/notes%2Ftodo.md").mock(
         return_value=Response(200, json={"ok": True, "rev": "2-updated"})
     )
-    # Old chunk GET for rev (needed for delete)
     respx.get(f"{BASE}/h%3Aoldchunk0000").mock(
         return_value=Response(200, json={"_id": "h:oldchunk0000", "_rev": "1-old"})
     )
-    # Old chunk DELETE
     delete_route = respx.delete(f"{BASE}/h%3Aoldchunk0000").mock(
         return_value=Response(200, json={"ok": True})
     )
 
     result = await client.write_note("Notes/todo.md", "Updated content")
     assert result is True
-    assert delete_route.called
+    assert not delete_route.called
 
 
 @respx.mock
-async def test_write_note_orphan_cleanup_failure_nonfatal(client):
-    """Failed chunk cleanup should log warning, not fail the write."""
+async def test_write_note_does_not_probe_dropped_chunks_for_cleanup(client):
+    """Dropped chunk cleanup is no longer attempted from the write path."""
     existing = _make_parent_doc("notes/todo.md", ["h:oldchunk0000"])
     _mock_get_doc("notes%2Ftodo.md", existing)
-    # Reference scan: only this doc, so the old chunk is considered orphaned
     _mock_get_all_file_docs([existing])
 
-    # New chunk creation
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
         return_value=Response(201, json={"ok": True, "rev": "1-new"})
     )
-    # Parent doc update
     respx.put(f"{BASE}/notes%2Ftodo.md").mock(
         return_value=Response(200, json={"ok": True, "rev": "2-updated"})
     )
-    # Old chunk GET returns 500 (cleanup fails)
-    respx.get(f"{BASE}/h%3Aoldchunk0000").mock(
+    old_chunk_get = respx.get(f"{BASE}/h%3Aoldchunk0000").mock(
         return_value=Response(500, json={"error": "internal"})
     )
 
-    # Write should still succeed
     result = await client.write_note("Notes/todo.md", "Updated content")
     assert result is True
+    assert not old_chunk_get.called
+
+
+@respx.mock
+async def test_prune_orphan_chunks_dry_run_lists_but_does_not_delete(client):
+    parent = _make_parent_doc("notes/a.md", ["h:used"])
+    respx.get(f"{BASE}/_all_docs").mock(
+        side_effect=[
+            Response(200, json={"rows": [{"id": "h:used"}, {"id": "h:orphan"}]}),
+            Response(200, json={"rows": [{"doc": parent}]}),
+            Response(200, json={"rows": []}),
+        ]
+    )
+    delete_route = respx.delete(url__regex=rf"{BASE}/h%3A.*").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+
+    report = await client.prune_orphan_chunks(dry_run=True)
+
+    assert report.total_chunks == 2
+    assert report.referenced == 1
+    assert report.orphan_chunk_ids == ["h:orphan"]
+    assert report.deleted == 0
+    assert not delete_route.called
 
 
 # ── soft-delete filtering ────────────────────────────────────────
