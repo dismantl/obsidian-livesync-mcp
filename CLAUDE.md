@@ -114,7 +114,7 @@ These settings **must** be configured for compatibility:
 ## Key Patterns
 
 - **Server config** — transport mode (`MCP_TRANSPORT`), host/port, and auth are configured at module level via `FastMCP(...)` constructor kwargs in `_server_kwargs`. `mcp.run()` only takes `transport`.
-- **Transfer URLs** — `create_download_url` / `create_upload_url` require streamable HTTP and `MCP_RESOURCE_URL`. The custom routes are capability-token authenticated and are intentionally reachable without the MCP bearer token; use HTTPS in production. The in-memory store assumes one server worker.
+- **Transfer URLs** — `create_download_url` / `create_upload_url` require streamable HTTP. Set `MCP_RESOURCE_URL` to the server's public URL for remote clients; the localhost default is only useful from the same host. The custom routes are capability-token authenticated and are intentionally reachable without the MCP bearer token; use HTTPS in production. The in-memory store assumes one server worker.
 - **Conflict handling** — writes retry on HTTP 409 (CouchDB revision conflicts).
 - **Search** — uses CouchDB Mango queries with regex on chunk data, then maps matching chunks back to parent notes via a reverse chunk-to-parent map.
 - **Frontmatter** — parsed via regex extraction of `---\nYAML\n---` blocks, then `yaml.safe_load`.

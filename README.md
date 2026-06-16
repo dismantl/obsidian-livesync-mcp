@@ -116,11 +116,11 @@ export MCP_TRANSPORT="streamable-http"
 export MCP_HOST="0.0.0.0"    # optional, defaults to 0.0.0.0
 export MCP_PORT="8080"        # optional, defaults to 8080
 export MCP_API_KEY="your-secret-key"  # optional, enables Bearer token auth
-export MCP_RESOURCE_URL="https://your-mcp-server.example.com"  # required for transfer URLs
+export MCP_RESOURCE_URL="https://your-mcp-server.example.com"  # public URL for remote transfer URLs
 python -m obsidian_livesync_mcp.server
 ```
 
-When `MCP_API_KEY` is set, clients must include `Authorization: Bearer your-secret-key` in requests. You can also set `MCP_RESOURCE_URL` to the server's public URL (defaults to `http://localhost:{MCP_PORT}`).
+When `MCP_API_KEY` is set, clients must include `Authorization: Bearer your-secret-key` in requests. Set `MCP_RESOURCE_URL` to the server's public URL for remote transfer URLs. If unset, generated URLs default to `http://localhost:{MCP_PORT}`, which is only useful from the same host.
 
 Large binary download/upload URLs are short-lived capability URLs served from `MCP_RESOURCE_URL`. They do not require the MCP bearer token, so use HTTPS in production. The in-memory link store assumes a single server worker.
 
