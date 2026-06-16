@@ -78,6 +78,28 @@ def test_download_streams_binary_chunks():
     assert "attachment" in response.headers["content-disposition"]
 
 
+def test_download_content_disposition_handles_unicode_and_quotes():
+    fake = _FakeTransferClient()
+    fake.docs['Attachments/report "q" 📄.txt'] = {
+        "_id": 'attachments/report "q" 📄.txt',
+        "path": 'Attachments/report "q" 📄.txt',
+        "type": "plain",
+        "children": ["h:a"],
+        "size": 5,
+    }
+    fake.chunks = {"h:a": "hello"}
+    store = EphemeralLinkStore(now=lambda: 1000.0, token_factory=lambda: "download-token")
+    store.create('Attachments/report "q" 📄.txt', mode="download", ttl_seconds=60)
+
+    with TestClient(_app(fake, store)) as client:
+        response = client.get("/download/download-token")
+
+    assert response.status_code == 200
+    header = response.headers["content-disposition"]
+    assert r'filename="report \"q\" .txt"' in header
+    assert "filename*=UTF-8''report%20%22q%22%20%F0%9F%93%84.txt" in header
+
+
 def test_download_holds_transfer_semaphore_while_streaming(monkeypatch):
     import obsidian_livesync_mcp.http_routes as routes
 

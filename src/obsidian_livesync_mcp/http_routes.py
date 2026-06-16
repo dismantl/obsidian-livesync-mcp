@@ -5,6 +5,7 @@ import base64
 import mimetypes
 import os
 from pathlib import PurePosixPath
+from urllib.parse import quote
 
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
@@ -36,7 +37,7 @@ async def handle_download(request: Request, client, store: EphemeralLinkStore):
     return StreamingResponse(
         _iter_limited_doc_bytes(client, doc),
         media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{_download_name(path)}"'},
+        headers={"Content-Disposition": _content_disposition(path)},
     )
 
 
@@ -97,3 +98,14 @@ def _raise_for_status(status: ResolveStatus) -> None:
 def _download_name(path: str) -> str:
     name = PurePosixPath(path).name
     return name or "download"
+
+
+def _content_disposition(path: str) -> str:
+    filename = _download_name(path)
+    fallback = filename.encode("ascii", "ignore").decode("ascii")
+    fallback = "".join(ch for ch in fallback if 32 <= ord(ch) < 127).strip()
+    if not fallback:
+        fallback = "download"
+    fallback = fallback.replace("\\", "\\\\").replace('"', '\\"')
+    encoded = quote(filename, safe="")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
