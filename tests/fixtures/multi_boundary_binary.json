@@ -1,0 +1,15 @@
+{
+  "data_file": "multi_boundary_binary.bin",
+  "expected_count": 7,
+  "expected_chunk_ids": [
+    "h:2itrpl3cxc604",
+    "h:ltlm7xfmejm1",
+    "h:383190pl980ww",
+    "h:tcrd56f6dhy4",
+    "h:2sto6cchtqvim",
+    "h:3oihegbkjyd98",
+    "h:aftukw9ywh3n"
+  ],
+  "source": "livesync-commonlib 6abcea69 splitPiecesRabinKarp via Node; chunk IDs hashed with LiveSync-compatible generate_chunk_id",
+  "captured": "2026-06-15"
+}

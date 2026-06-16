@@ -4,6 +4,7 @@ import pytest
 import respx
 from httpx import Response
 
+from obsidian_livesync_mcp.chunking import split_chunks
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 from obsidian_livesync_mcp.config import Config
 from obsidian_livesync_mcp.utils import encode_doc_id, generate_chunk_id
@@ -301,6 +302,141 @@ async def test_reassemble_binary_raises_on_missing_chunk(client):
         await client._reassemble_binary(doc)
 
 
+@respx.mock
+async def test_health_check_classifies_children(client):
+    parent = _make_parent_doc("sample/n.md", ["h:live", "h:dead", "h:gone"], size=8540)
+    _mock_get_doc(encode_doc_id("sample/n.md"), parent)
+    respx.post(f"{BASE}/_all_docs").mock(
+        return_value=Response(
+            200,
+            json={
+                "rows": [
+                    {"id": "h:live", "doc": {"_id": "h:live", "data": "x"}},
+                    {
+                        "id": "h:dead",
+                        "value": {"deleted": True, "rev": "2-d"},
+                        "doc": {"_id": "h:dead", "_deleted": True},
+                    },
+                    {"id": "h:gone", "error": "not_found"},
+                ]
+            },
+        )
+    )
+
+    report = await client.health_check_note("Sample/n.md")
+
+    assert report.live == 1
+    assert report.tombstoned == 1
+    assert report.missing == 1
+    assert report.child_count == 3
+    assert report.bad_chunk_ids == ["h:dead", "h:gone"]
+
+
+@respx.mock
+async def test_repair_recreates_chunks_then_verifies(client):
+    from obsidian_livesync_mcp.chunking import split_chunks
+
+    body_text = "repaired content " * 20
+    body = body_text.encode("utf-8")
+    chunks = split_chunks(body, is_text=True)
+    chunk_ids = [generate_chunk_id(chunk) for chunk in chunks]
+    existing = _make_parent_doc("sample/r.md", ["h:old"], _rev="9-x")
+    repaired = _make_parent_doc(
+        "sample/r.md",
+        chunk_ids,
+        _rev="10-y",
+        size=len(body),
+        path="sample/r.md",
+    )
+
+    respx.put(url__regex=rf"{BASE}/h%3A.*").mock(return_value=Response(201, json={"ok": True}))
+    respx.get(f"{BASE}/{encode_doc_id('sample/r.md')}").mock(
+        side_effect=[
+            Response(200, json=existing),
+            Response(200, json=repaired),
+        ]
+    )
+    respx.put(f"{BASE}/{encode_doc_id('sample/r.md')}").mock(
+        return_value=Response(201, json={"ok": True})
+    )
+    respx.get(f"{BASE}/_all_docs").mock(
+        side_effect=[
+            Response(200, json={"rows": []}),
+            Response(200, json={"rows": []}),
+        ]
+    )
+    respx.get(f"{BASE}/h%3Aold").mock(return_value=Response(404, json={"error": "not_found"}))
+
+    def _verify(request):
+        import json as _json
+
+        keys = _json.loads(request.content)["keys"]
+        rows = [
+            {"id": chunk_id, "doc": {"_id": chunk_id, "data": chunk}}
+            for chunk_id, chunk in zip(chunk_ids, chunks, strict=True)
+            if chunk_id in keys
+        ]
+        return Response(200, json={"rows": rows})
+
+    respx.post(f"{BASE}/_all_docs").mock(side_effect=_verify)
+
+    ok = await client.repair_note_from_bytes("Sample/r.md", body, is_text=True)
+
+    assert ok is True
+
+
+@respx.mock
+async def test_repair_rejects_read_back_content_mismatch(client):
+    from obsidian_livesync_mcp.chunking import split_chunks
+
+    body_text = "repaired content " * 20
+    body = body_text.encode("utf-8")
+    chunks = split_chunks(body, is_text=True)
+    chunk_ids = [generate_chunk_id(chunk) for chunk in chunks]
+    existing = _make_parent_doc("sample/r.md", ["h:old"], _rev="9-x")
+    repaired = _make_parent_doc(
+        "sample/r.md",
+        chunk_ids,
+        _rev="10-y",
+        size=len(body),
+        path="sample/r.md",
+    )
+
+    respx.put(url__regex=rf"{BASE}/h%3A.*").mock(return_value=Response(201, json={"ok": True}))
+    respx.get(f"{BASE}/{encode_doc_id('sample/r.md')}").mock(
+        side_effect=[
+            Response(200, json=existing),
+            Response(200, json=repaired),
+        ]
+    )
+    respx.put(f"{BASE}/{encode_doc_id('sample/r.md')}").mock(
+        return_value=Response(201, json={"ok": True})
+    )
+    respx.get(f"{BASE}/_all_docs").mock(
+        side_effect=[
+            Response(200, json={"rows": []}),
+            Response(200, json={"rows": []}),
+        ]
+    )
+    respx.get(f"{BASE}/h%3Aold").mock(return_value=Response(404, json={"error": "not_found"}))
+
+    def _verify(request):
+        import json as _json
+
+        keys = _json.loads(request.content)["keys"]
+        rows = [
+            {"id": chunk_id, "doc": {"_id": chunk_id, "data": "stale content"}}
+            for chunk_id in chunk_ids
+            if chunk_id in keys
+        ]
+        return Response(200, json={"rows": rows})
+
+    respx.post(f"{BASE}/_all_docs").mock(side_effect=_verify)
+
+    with pytest.raises(ValueError, match="read-back content did not match"):
+        await client.repair_note_from_bytes("Sample/r.md", body, is_text=True)
+
+
 def test_attachment_content_to_dict_base64():
     from obsidian_livesync_mcp.models import AttachmentContent
 
@@ -370,7 +506,7 @@ async def test_write_does_not_delete_orphan_chunks(client):
     Auto-deletion tombstones content-addressed chunks, which can break other
     notes and is the suspected cause of the 2026-06-15 tombstone incident.
     """
-    doc_id = "context/note.md"
+    doc_id = "sample/note.md"
     existing = _make_parent_doc(doc_id, ["h:oldchunk1", "h:oldchunk2"], _rev="5-old")
 
     _mock_get_doc(encode_doc_id(doc_id), existing)
@@ -381,7 +517,7 @@ async def test_write_does_not_delete_orphan_chunks(client):
         return_value=Response(200, json={"ok": True})
     )
 
-    await client.write_note("Context/note.md", "completely new content body")
+    await client.write_note("Sample/note.md", "completely new content body")
 
     assert not delete_route.called, "write_note must not DELETE any chunk doc"
 
@@ -436,6 +572,70 @@ async def test_write_note_resurrects_tombstoned_chunk_conflict(client):
     }
     parent_body = _json.loads(parent_put.calls[0].request.content)
     assert parent_body["children"] == [chunk_id]
+
+
+@respx.mock
+async def test_write_resurrects_tombstoned_chunk(client):
+    """A needed tombstoned chunk must be PUT with its reusable tombstone rev."""
+    import json as _json
+
+    content = "x"
+    chunk_id = generate_chunk_id(content)
+    chunk_route = respx.put(f"{BASE}/{encode_doc_id(chunk_id)}").mock(
+        side_effect=[
+            Response(409, json={"error": "conflict"}),
+            Response(201, json={"ok": True, "rev": "3-live"}),
+        ]
+    )
+    tombstone_lookup = respx.post(f"{BASE}/_all_docs").mock(
+        return_value=Response(
+            200,
+            json={
+                "rows": [
+                    {
+                        "id": chunk_id,
+                        "value": {"rev": "2-dead", "deleted": True},
+                        "doc": {"_id": chunk_id, "_rev": "2-dead", "_deleted": True},
+                    }
+                ]
+            },
+        )
+    )
+    _mock_get_doc_404(encode_doc_id("sample/new.md"))
+    _mock_get_doc_404(encode_doc_id("/sample/new.md"))
+    respx.put(f"{BASE}/{encode_doc_id('sample/new.md')}").mock(
+        return_value=Response(201, json={"ok": True})
+    )
+
+    await client.write_note("Sample/new.md", content)
+
+    lookup_body = _json.loads(tombstone_lookup.calls[0].request.content)
+    assert lookup_body["keys"] == [chunk_id]
+    resurrect_body = _json.loads(chunk_route.calls[-1].request.content)
+    assert resurrect_body["_rev"] == "2-dead"
+
+
+@respx.mock
+async def test_parent_put_happens_after_chunk_puts(client):
+    """The parent doc must be PUT only after all chunk PUTs succeed."""
+    order = []
+    content = "some content body here\n" * 200
+    expected_chunks = split_chunks(content.encode("utf-8"), is_text=True)
+    assert len(expected_chunks) > 1
+    respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
+        side_effect=lambda request: order.append("chunk") or Response(201, json={"ok": True})
+    )
+    parent_id = encode_doc_id("sample/ordered.md")
+    _mock_get_doc_404(parent_id)
+    _mock_get_doc_404(encode_doc_id("/sample/ordered.md"))
+    respx.put(f"{BASE}/{parent_id}").mock(
+        side_effect=lambda request: order.append("parent") or Response(201, json={"ok": True})
+    )
+
+    await client.write_note("Sample/ordered.md", content)
+
+    assert order[-1] == "parent", "parent must be written last"
+    assert order == ["chunk"] * len(expected_chunks) + ["parent"]
 
 
 @respx.mock

@@ -1,6 +1,18 @@
 """Tests for obsidian_livesync_mcp.chunking — Rabin-Karp content-defined chunking."""
 
+import json
+from pathlib import Path
+
 from obsidian_livesync_mcp.chunking import split_chunks
+from obsidian_livesync_mcp.utils import generate_chunk_id
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _load_fixture(name):
+    meta = json.loads((FIXTURES / f"{name}.json").read_text())
+    data = (FIXTURES / meta["data_file"]).read_bytes()
+    return data, meta
 
 
 def test_empty_input():
@@ -18,8 +30,11 @@ def test_small_text_single_chunk():
 
 
 def test_large_text_splits():
-    """Text large enough should split into multiple chunks."""
-    # 10KB of text — avg chunk size = max(128, 10000/20) = 500 bytes
+    """Text large enough should split into multiple chunks.
+
+    Fixed-size v3 sizing targets 256 B average / 1 KiB max for this text, so
+    it splits more aggressively than the old size/20 model.
+    """
     content = "Line of text content here.\n" * 400  # ~10.8KB
     data = content.encode("utf-8")
     chunks = split_chunks(data, is_text=True)
@@ -63,7 +78,7 @@ def test_decode_binary_chunks_roundtrip_multichunk():
     """Multi-chunk binary must round-trip byte-for-byte."""
     from obsidian_livesync_mcp.chunking import decode_binary_chunks
 
-    data = bytes((i * 37 + (i >> 3)) & 0xFF for i in range(50000))
+    data = bytes((i * 37 + (i >> 3)) & 0xFF for i in range(250000))
     chunks = split_chunks(data, is_text=False)
     assert len(chunks) > 1
     assert decode_binary_chunks(chunks) == data
@@ -96,3 +111,19 @@ def test_max_chunk_size_respected():
     chunks = split_chunks(data, is_text=True, absolute_max_piece_size=max_size)
     for chunk in chunks:
         assert len(chunk.encode("utf-8")) <= max_size * 6  # generous margin for boundary
+
+
+def test_text_fixture_matches_livesync_v3_ids():
+    """Tracks LiveSync v3-rabin-karp chunk IDs as of commonlib 6abcea69."""
+    data, meta = _load_fixture("multi_boundary_text")
+    ids = [generate_chunk_id(chunk) for chunk in split_chunks(data, is_text=True)]
+    assert ids == meta["expected_chunk_ids"]
+    assert len(ids) == meta["expected_count"]
+
+
+def test_binary_fixture_matches_livesync_v3_ids():
+    """Tracks binary chunk IDs from the same LiveSync v3 sizing model."""
+    data, meta = _load_fixture("multi_boundary_binary")
+    ids = [generate_chunk_id(chunk) for chunk in split_chunks(data, is_text=False)]
+    assert ids == meta["expected_chunk_ids"]
+    assert len(ids) == meta["expected_count"]
