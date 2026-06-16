@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import mimetypes
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -13,7 +14,15 @@ import httpx
 from .attachments import AttachmentOps
 from .chunking import decode_binary_chunks, split_chunks
 from .config import Config
-from .models import BacklinkInfo, FolderInfo, NoteContent, NoteMetadata, SearchResult
+from .models import (
+    BacklinkInfo,
+    FileInfo,
+    FolderInfo,
+    NoteContent,
+    NoteMetadata,
+    NoteRange,
+    SearchResult,
+)
 from .utils import (
     encode_doc_id,
     extract_frontmatter,
@@ -49,6 +58,15 @@ READ_RETRIES = 3
 READ_RETRY_DELAY = 0.25
 FILE_DOC_TYPES = {"plain", "newnote", "notes"}
 FILE_DOC_PAGE_SIZE = 100
+CHUNK_DATA_BATCH_SIZE = 64
+
+
+class MissingChunksError(ValueError):
+    """Raised when a chunk batch references chunks that are not live."""
+
+    def __init__(self, missing: list[str]):
+        self.missing = missing
+        super().__init__(f"Missing {len(missing)} chunk(s): {missing[:3]}")
 
 
 @dataclass
@@ -140,6 +158,48 @@ class ObsidianVaultClient(AttachmentOps):
             if doc and "data" in doc:
                 result[row["id"]] = doc["data"]
         return result
+
+    async def _iter_chunk_data(
+        self,
+        chunk_ids: list[str],
+        batch_size: int = CHUNK_DATA_BATCH_SIZE,
+    ):
+        """Yield ``(chunk_id, data)`` for chunk docs in input order, in bounded batches."""
+        if not chunk_ids:
+            return
+
+        client = await self._get_client()
+        batch_size = max(1, int(batch_size))
+        for start in range(0, len(chunk_ids), batch_size):
+            batch = chunk_ids[start : start + batch_size]
+            resp = await client.post(
+                "/_all_docs",
+                json={"keys": batch},
+                params={"include_docs": "true"},
+            )
+            resp.raise_for_status()
+            rows = {
+                row.get("id") or (row.get("doc") or {}).get("_id"): row
+                for row in resp.json().get("rows", [])
+            }
+            missing: list[str] = []
+
+            for chunk_id in batch:
+                row = rows.get(chunk_id) or {"error": "not_found"}
+                doc = row.get("doc") or {}
+                value = row.get("value") or {}
+                if (
+                    row.get("error") == "not_found"
+                    or doc.get("_deleted")
+                    or value.get("deleted")
+                    or "data" not in doc
+                ):
+                    missing.append(chunk_id)
+                    continue
+                yield chunk_id, doc["data"]
+
+            if missing:
+                raise MissingChunksError(missing)
 
     # INVARIANT: every chunk a parent will reference is PUT/resurrected-live by
     # _put_chunk_doc before the parent doc is written (see _write_file_doc).
@@ -441,6 +501,152 @@ class ObsidianVaultClient(AttachmentOps):
         return True
 
     # ── Read operations ────────────────────────────────────────────
+
+    async def get_file_info(
+        self,
+        path: str,
+        inline_budget_bytes: int | None = None,
+    ) -> FileInfo | None:
+        """Read file metadata without fetching chunk bytes."""
+        doc = await self._get_doc(path)
+        if not doc or doc.get("deleted"):
+            return None
+
+        is_binary = doc.get("type") == "newnote"
+        size = doc.get("size", 0)
+        inline_cost = _inline_cost_bytes(size, is_binary)
+        content_type = mimetypes.guess_type(path)[0]
+        if content_type is None:
+            content_type = "application/octet-stream" if is_binary else "text/plain"
+
+        return FileInfo(
+            path=doc.get("path", path),
+            size=size,
+            is_binary=is_binary,
+            content_type=content_type,
+            chunk_count=len(doc.get("children", [])),
+            ctime=doc.get("ctime", 0),
+            mtime=doc.get("mtime", 0),
+            inline_cost_bytes=inline_cost,
+            fits_inline=None if inline_budget_bytes is None else inline_cost <= inline_budget_bytes,
+        )
+
+    async def read_note_range(
+        self,
+        path: str,
+        offset: int,
+        length: int,
+        *,
+        retries: int = READ_RETRIES,
+        retry_delay: float = READ_RETRY_DELAY,
+    ) -> NoteRange | None:
+        """Read a character range from a text note without materializing it."""
+        if length < 0:
+            raise ValueError("length must be >= 0")
+
+        last_missing: list[str] = []
+        for attempt in range(retries + 1):
+            doc = await self._get_doc(path)
+            if not doc or doc.get("deleted"):
+                return None
+
+            try:
+                return await self._read_note_range_from_doc(doc, path, offset, length)
+            except MissingChunksError as e:
+                last_missing = e.missing
+                if attempt < retries:
+                    await asyncio.sleep(retry_delay)
+                    continue
+                raise ValueError(
+                    f"Missing {len(last_missing)} chunk(s) for {path} after "
+                    f"{retries + 1} attempt(s): {last_missing[:3]}"
+                ) from e
+
+        return None
+
+    async def _read_note_range_from_doc(
+        self,
+        doc: dict,
+        path: str,
+        offset: int,
+        length: int,
+    ) -> NoteRange:
+        if doc.get("type") == "newnote":
+            raise ValueError(
+                "read_note_range only supports text files; use attachment tools for binary files"
+            )
+
+        if doc.get("type") == "notes":
+            data = doc.get("data", "")
+            content = "".join(data) if isinstance(data, list) else str(data)
+            return _range_from_text(doc.get("path", path), content, offset, length)
+
+        chunk_ids = doc.get("children", [])
+        if offset < 0:
+            total_chars = await self._count_text_chars(chunk_ids)
+            start = max(total_chars + offset, 0)
+            content = await self._collect_text_range(chunk_ids, start, length)
+            next_offset = min(start + len(content), total_chars)
+            return NoteRange(
+                path=doc.get("path", path),
+                content=content,
+                offset=start,
+                length=len(content),
+                next_offset=next_offset,
+                eof=next_offset >= total_chars,
+                total_chars=total_chars,
+            )
+
+        start = max(offset, 0)
+        end = start + length
+        total_chars = 0
+        parts: list[str] = []
+
+        async for _, data in self._iter_chunk_data(chunk_ids):
+            chunk_start = total_chars
+            chunk_end = total_chars + len(data)
+            if length > 0 and chunk_end > start and chunk_start < end:
+                piece_start = max(start - chunk_start, 0)
+                piece_end = min(end - chunk_start, len(data))
+                parts.append(data[piece_start:piece_end])
+            total_chars = chunk_end
+
+        content = "".join(parts)
+        next_offset = min(start + len(content), total_chars)
+        return NoteRange(
+            path=doc.get("path", path),
+            content=content,
+            offset=min(start, total_chars),
+            length=len(content),
+            next_offset=next_offset,
+            eof=next_offset >= total_chars,
+            total_chars=total_chars,
+        )
+
+    async def _count_text_chars(self, chunk_ids: list[str]) -> int:
+        total = 0
+        async for _, data in self._iter_chunk_data(chunk_ids):
+            total += len(data)
+        return total
+
+    async def _collect_text_range(self, chunk_ids: list[str], offset: int, length: int) -> str:
+        if length <= 0:
+            return ""
+
+        end = offset + length
+        total_chars = 0
+        parts: list[str] = []
+        async for _, data in self._iter_chunk_data(chunk_ids):
+            chunk_start = total_chars
+            chunk_end = total_chars + len(data)
+            if chunk_end > offset and chunk_start < end:
+                piece_start = max(offset - chunk_start, 0)
+                piece_end = min(end - chunk_start, len(data))
+                parts.append(data[piece_start:piece_end])
+                if chunk_end >= end:
+                    break
+            total_chars = chunk_end
+        return "".join(parts)
 
     async def list_notes(
         self, folder: str | None = None, limit: int = 50, skip: int = 0
@@ -1034,3 +1240,23 @@ def _file_doc_ranges(
 def _page_batch_size(limit: int, skip: int) -> int:
     desired = limit + max(skip, 0)
     return max(1, min(desired, FILE_DOC_PAGE_SIZE))
+
+
+def _inline_cost_bytes(size: int, is_binary: bool) -> int:
+    return ((size + 2) // 3) * 4 if is_binary else size
+
+
+def _range_from_text(path: str, text: str, offset: int, length: int) -> NoteRange:
+    total_chars = len(text)
+    start = max(total_chars + offset, 0) if offset < 0 else max(offset, 0)
+    content = text[start : start + length]
+    next_offset = min(start + len(content), total_chars)
+    return NoteRange(
+        path=path,
+        content=content,
+        offset=min(start, total_chars),
+        length=len(content),
+        next_offset=next_offset,
+        eof=next_offset >= total_chars,
+        total_chars=total_chars,
+    )

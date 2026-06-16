@@ -459,6 +459,238 @@ def test_attachment_metadata_to_dict():
     assert d["chunks"] == 3
 
 
+def test_file_info_to_dict_omits_absent_budget_result():
+    from obsidian_livesync_mcp.models import FileInfo
+
+    info = FileInfo(
+        path="Notes/a.txt",
+        size=10,
+        is_binary=False,
+        content_type="text/plain",
+        chunk_count=2,
+        ctime=1,
+        mtime=2,
+        inline_cost_bytes=10,
+    )
+
+    assert info.to_dict() == {
+        "path": "Notes/a.txt",
+        "size": 10,
+        "is_binary": False,
+        "content_type": "text/plain",
+        "chunks": 2,
+        "ctime": 1,
+        "mtime": 2,
+        "inline_cost_bytes": 10,
+    }
+
+
+def test_note_range_to_dict():
+    from obsidian_livesync_mcp.models import NoteRange
+
+    note_range = NoteRange(
+        path="Notes/a.md",
+        content="hello",
+        offset=0,
+        length=5,
+        next_offset=5,
+        eof=False,
+        total_chars=20,
+    )
+
+    assert note_range.to_dict()["next_offset"] == 5
+    assert note_range.to_dict()["total_chars"] == 20
+
+
+# ── bounded chunk streaming ───────────────────────────────────────
+
+
+@respx.mock
+async def test_iter_chunk_data_fetches_bounded_batches_in_order(client):
+    seen_keys: list[list[str]] = []
+
+    def all_docs_batch(request):
+        import json as _json
+
+        keys = _json.loads(request.content)["keys"]
+        seen_keys.append(keys)
+        rows = [{"id": key, "doc": {"_id": key, "data": key.upper()}} for key in keys]
+        return Response(200, json={"rows": rows})
+
+    respx.post(f"{BASE}/_all_docs").mock(side_effect=all_docs_batch)
+
+    chunks = [
+        (chunk_id, data)
+        async for chunk_id, data in client._iter_chunk_data(
+            ["h:a", "h:b", "h:c"],
+            batch_size=2,
+        )
+    ]
+
+    assert seen_keys == [["h:a", "h:b"], ["h:c"]]
+    assert chunks == [("h:a", "H:A"), ("h:b", "H:B"), ("h:c", "H:C")]
+
+
+@respx.mock
+async def test_iter_chunk_data_raises_on_missing_chunk(client):
+    respx.post(f"{BASE}/_all_docs").mock(
+        return_value=Response(200, json={"rows": [{"id": "h:gone", "error": "not_found"}]})
+    )
+
+    with pytest.raises(ValueError, match="Missing 1 chunk"):
+        _ = [item async for item in client._iter_chunk_data(["h:gone"])]
+
+
+# ── file info and ranged reads ────────────────────────────────────
+
+
+@respx.mock
+async def test_get_file_info_text_uses_parent_doc_only(client):
+    doc = _make_parent_doc("notes/a.txt", ["h:c1", "h:c2"], path="Notes/a.txt", size=123)
+    _mock_get_doc("notes%2Fa.txt", doc)
+    chunk_fetch = respx.post(f"{BASE}/_all_docs").mock(
+        return_value=Response(500, json={"error": "should_not_fetch_chunks"})
+    )
+
+    info = await client.get_file_info("Notes/a.txt", inline_budget_bytes=200)
+
+    assert info is not None
+    assert info.to_dict() == {
+        "path": "Notes/a.txt",
+        "size": 123,
+        "is_binary": False,
+        "content_type": "text/plain",
+        "chunks": 2,
+        "ctime": 1700000000000,
+        "mtime": 1700000000000,
+        "inline_cost_bytes": 123,
+        "fits_inline": True,
+    }
+    assert not chunk_fetch.called
+
+
+@respx.mock
+async def test_get_file_info_binary_uses_base64_inline_cost(client):
+    doc = _make_parent_doc(
+        "attachments/pic.png",
+        ["h:c1"],
+        path="Attachments/pic.png",
+        type="newnote",
+        size=5,
+    )
+    _mock_get_doc("attachments%2Fpic.png", doc)
+
+    info = await client.get_file_info("Attachments/pic.png", inline_budget_bytes=6)
+
+    assert info is not None
+    assert info.is_binary is True
+    assert info.content_type == "image/png"
+    assert info.inline_cost_bytes == 8
+    assert info.fits_inline is False
+
+
+@respx.mock
+async def test_read_note_range_returns_character_slice(client):
+    doc = _make_parent_doc("notes/a.md", ["h:c1", "h:c2"], path="Notes/a.md")
+    _mock_get_doc("notes%2Fa.md", doc)
+    _mock_all_docs({"h:c1": "Hello ", "h:c2": "👋 world"})
+
+    result = await client.read_note_range("Notes/a.md", offset=6, length=3)
+
+    assert result is not None
+    assert result.content == "👋 w"
+    assert result.offset == 6
+    assert result.next_offset == 9
+    assert result.total_chars == 13
+    assert result.eof is False
+
+
+@respx.mock
+async def test_read_note_range_negative_offset_reads_tail(client):
+    doc = _make_parent_doc("notes/a.md", ["h:c1", "h:c2"], path="Notes/a.md")
+    _mock_get_doc("notes%2Fa.md", doc)
+    respx.post(f"{BASE}/_all_docs").mock(
+        side_effect=[
+            Response(
+                200,
+                json={
+                    "rows": [
+                        {"id": "h:c1", "doc": {"_id": "h:c1", "data": "Hello "}},
+                        {"id": "h:c2", "doc": {"_id": "h:c2", "data": "world"}},
+                    ]
+                },
+            ),
+            Response(
+                200,
+                json={
+                    "rows": [
+                        {"id": "h:c1", "doc": {"_id": "h:c1", "data": "Hello "}},
+                        {"id": "h:c2", "doc": {"_id": "h:c2", "data": "world"}},
+                    ]
+                },
+            ),
+        ]
+    )
+
+    result = await client.read_note_range("Notes/a.md", offset=-5, length=5)
+
+    assert result is not None
+    assert result.content == "world"
+    assert result.offset == 6
+    assert result.next_offset == 11
+    assert result.total_chars == 11
+    assert result.eof is True
+
+
+@respx.mock
+async def test_read_note_range_retries_transient_missing_chunk(client):
+    """A stale parent is re-fetched so a concurrent rewrite's chunks resolve."""
+    from unittest.mock import AsyncMock, patch
+
+    stale_doc = _make_parent_doc("notes/hot.md", ["h:old"], size=5)
+    fresh_doc = _make_parent_doc("notes/hot.md", ["h:new"], size=5)
+    respx.get(f"{BASE}/notes%2Fhot.md").mock(
+        side_effect=[
+            Response(200, json=stale_doc),
+            Response(200, json=fresh_doc),
+        ]
+    )
+    respx.post(f"{BASE}/_all_docs").mock(
+        side_effect=[
+            Response(200, json={"rows": []}),
+            Response(200, json={"rows": [{"id": "h:new", "doc": {"data": "Hello"}}]}),
+        ]
+    )
+
+    with patch("obsidian_livesync_mcp.client.asyncio.sleep", new=AsyncMock()) as sleep:
+        result = await client.read_note_range("Notes/hot.md", offset=0, length=5)
+
+    assert result is not None
+    assert result.content == "Hello"
+    sleep.assert_awaited_once()
+
+
+@respx.mock
+async def test_read_note_range_rejects_binary(client):
+    doc = _make_parent_doc("attachments/pic.png", ["h:c1"], type="newnote")
+    _mock_get_doc("attachments%2Fpic.png", doc)
+
+    with pytest.raises(ValueError, match="read_note_range only supports text"):
+        await client.read_note_range("Attachments/pic.png", offset=0, length=10)
+
+
+@respx.mock
+async def test_read_note_range_surfaces_missing_chunk(client):
+    doc = _make_parent_doc("notes/a.md", ["h:gone"], path="Notes/a.md")
+    _mock_get_doc("notes%2Fa.md", doc)
+    respx.post(f"{BASE}/_all_docs").mock(
+        return_value=Response(200, json={"rows": [{"id": "h:gone", "error": "not_found"}]})
+    )
+
+    with pytest.raises(ValueError, match="Missing 1 chunk"):
+        await client.read_note_range("Notes/a.md", offset=0, length=10)
+
+
 # ── write_note ────────────────────────────────────────────────────
 
 

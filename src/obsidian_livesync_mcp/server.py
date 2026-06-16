@@ -149,19 +149,73 @@ async def list_notes(folder: str | None = None, limit: int = 50, skip: int = 0) 
 
 @mcp.tool()
 @_tool_error_handler
-async def read_note(path: str) -> str:
+async def get_file_info(path: str, inline_budget_bytes: int | None = None) -> str:
+    """Inspect a note or attachment without fetching chunk content.
+
+    Args:
+        path: Vault path to inspect
+        inline_budget_bytes: Optional caller-provided inline budget. When set,
+            the response includes whether this file fits that budget after
+            accounting for base64 inflation on binary files.
+    """
+    client = _get_client()
+    info = await client.get_file_info(path, inline_budget_bytes=inline_budget_bytes)
+    if info is None:
+        return f"File not found: {path}"
+    lines = [f"{key}: {value}" for key, value in info.to_dict().items()]
+    lines.append("tools: read_note, read_note_range, get_attachment")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@_tool_error_handler
+async def read_note(path: str, max_bytes: int = 1_000_000) -> str:
     """Read the full content of a note from the Obsidian vault.
 
     Args:
         path: Vault path to the note (e.g. "Dev Projects/Arrmada/README.md")
+        max_bytes: Refuse to return text notes larger than this (default 1MB)
     """
     client = _get_client()
+    info = await client.get_file_info(path)
+    if info is None:
+        return f"Note not found: {path}"
+    if info.is_binary:
+        return (
+            f"Binary file ({info.size} bytes). Use get_attachment for small binary files "
+            "or list_attachments to inspect available files."
+        )
+    if info.size > max_bytes:
+        return (
+            f"Note {path} is {info.size} bytes (> max_bytes={max_bytes}). "
+            "Use get_file_info to inspect it or read_note_range to page through it."
+        )
+
     note = await client.read_note(path)
     if not note:
         return f"Note not found: {path}"
-    if note.is_binary:
-        return f"Binary file ({note.size} bytes). Content is base64 encoded."
     return note.content
+
+
+@mcp.tool()
+@_tool_error_handler
+async def read_note_range(path: str, offset: int, length: int) -> str:
+    """Read a character range from a text note.
+
+    Args:
+        path: Vault path to the note
+        offset: Character offset. Negative values read relative to the end.
+        length: Maximum number of characters to return.
+    """
+    client = _get_client()
+    note_range = await client.read_note_range(path, offset=offset, length=length)
+    if note_range is None:
+        return f"Note not found: {path}"
+    eof = "true" if note_range.eof else "false"
+    return (
+        f"{note_range.path} chars {note_range.offset}-{note_range.next_offset} "
+        f"of {note_range.total_chars} (eof={eof})\n{note_range.content}"
+    )
 
 
 @mcp.tool()
