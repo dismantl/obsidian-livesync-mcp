@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import logging
 import time
 from collections import defaultdict
@@ -46,6 +47,8 @@ BINARY_EXTENSIONS = {
 # before failing, mirroring the Obsidian app's wait-for-chunks behavior.
 READ_RETRIES = 3
 READ_RETRY_DELAY = 0.25
+FILE_DOC_TYPES = {"plain", "newnote", "notes"}
+FILE_DOC_PAGE_SIZE = 100
 
 
 @dataclass
@@ -250,6 +253,64 @@ class ObsidianVaultClient(AttachmentOps):
             in_use.update(doc.get("children", []))
         return in_use
 
+    async def _iter_file_docs(
+        self,
+        *,
+        include_deleted: bool = False,
+        folder: str | None = None,
+        batch_size: int = FILE_DOC_PAGE_SIZE,
+    ):
+        """Yield file docs from bounded _all_docs pages in stable doc-id order.
+
+        Folder filters use an _id prefix range when LiveSync path obfuscation is
+        disabled. Obfuscated paths cannot be prefix-scanned, so they fall back
+        to the normal non-chunk ranges and filter by the stored path field.
+        """
+        client = await self._get_client()
+        batch_size = max(1, int(batch_size))
+        folder_lower = _folder_filter(folder)
+
+        for doc_range in _file_doc_ranges(folder, self.config.obfuscate_passphrase):
+            startkey = doc_range.get("startkey")
+            skip_duplicate = False
+
+            while True:
+                params = {
+                    "include_docs": "true",
+                    "limit": str(batch_size),
+                }
+                if startkey is not None:
+                    params["startkey"] = json.dumps(startkey)
+                    if skip_duplicate:
+                        params["skip"] = "1"
+                if doc_range.get("endkey") is not None:
+                    params["endkey"] = json.dumps(doc_range["endkey"])
+                if doc_range.get("inclusive_end") is False:
+                    params["inclusive_end"] = "false"
+
+                resp = await client.get("/_all_docs", params=params)
+                resp.raise_for_status()
+                rows = resp.json().get("rows", [])
+                if not rows:
+                    break
+
+                last_id = None
+                for row in rows:
+                    last_id = row.get("id") or (row.get("doc") or {}).get("_id")
+                    doc = row.get("doc") or {}
+                    if not _is_file_doc(doc):
+                        continue
+                    if not include_deleted and doc.get("deleted"):
+                        continue
+                    if folder_lower and not _doc_in_folder(doc, folder_lower):
+                        continue
+                    yield doc
+
+                if len(rows) < batch_size or last_id is None:
+                    break
+                startkey = last_id
+                skip_duplicate = True
+
     async def _get_all_file_docs(self, include_deleted: bool = False) -> list[dict]:
         """Fetch all file docs (skip chunks, design docs, index docs).
 
@@ -257,47 +318,7 @@ class ObsidianVaultClient(AttachmentOps):
         Pass ``include_deleted=True`` to include them (e.g. for orphan-chunk
         bookkeeping where we need the full set).
         """
-        client = await self._get_client()
-        docs = []
-
-        # Range 1: docs before "h:" (chunk prefix)
-        resp = await client.get(
-            "/_all_docs",
-            params={
-                "include_docs": "true",
-                "endkey": '"h:"',
-                "inclusive_end": "false",
-            },
-        )
-        resp.raise_for_status()
-        for row in resp.json().get("rows", []):
-            doc = row.get("doc", {})
-            if doc.get("type") in ("plain", "newnote", "notes") and (
-                "children" in doc or "data" in doc
-            ):
-                if not include_deleted and doc.get("deleted"):
-                    continue
-                docs.append(doc)
-
-        # Range 2: docs after "h:~" (after all chunks)
-        resp = await client.get(
-            "/_all_docs",
-            params={
-                "include_docs": "true",
-                "startkey": '"h:~"',
-            },
-        )
-        resp.raise_for_status()
-        for row in resp.json().get("rows", []):
-            doc = row.get("doc", {})
-            if doc.get("type") in ("plain", "newnote", "notes") and (
-                "children" in doc or "data" in doc
-            ):
-                if not include_deleted and doc.get("deleted"):
-                    continue
-                docs.append(doc)
-
-        return docs
+        return [doc async for doc in self._iter_file_docs(include_deleted=include_deleted)]
 
     async def prune_orphan_chunks(self, *, dry_run: bool = True) -> PruneReport:
         """Find chunk docs referenced by no live or soft-deleted file doc.
@@ -425,19 +446,16 @@ class ObsidianVaultClient(AttachmentOps):
         self, folder: str | None = None, limit: int = 50, skip: int = 0
     ) -> list[NoteMetadata]:
         """List notes, optionally filtered by folder prefix."""
-        all_docs = await self._get_all_file_docs()
+        if limit <= 0:
+            return []
 
-        if folder:
-            folder_lower = folder.strip("/").lower() + "/"
-            all_docs = [
-                d for d in all_docs if d.get("_id", "").lstrip("/").startswith(folder_lower)
-            ]
-
-        # Sort by mtime descending
-        all_docs.sort(key=lambda d: d.get("mtime", 0), reverse=True)
-
-        results = []
-        for doc in all_docs[skip : skip + limit]:
+        results: list[NoteMetadata] = []
+        seen = 0
+        batch_size = _page_batch_size(limit, skip)
+        async for doc in self._iter_file_docs(folder=folder, batch_size=batch_size):
+            if seen < skip:
+                seen += 1
+                continue
             results.append(
                 NoteMetadata(
                     path=doc.get("path", doc["_id"]),
@@ -448,6 +466,8 @@ class ObsidianVaultClient(AttachmentOps):
                     chunk_count=len(doc.get("children", [])),
                 )
             )
+            if len(results) >= limit:
+                break
         return results
 
     async def read_note(
@@ -975,3 +995,42 @@ class ObsidianVaultClient(AttachmentOps):
                 results.append(BacklinkInfo(source_path=doc_path, context=ctx))
 
         return results
+
+
+def _is_file_doc(doc: dict) -> bool:
+    return doc.get("type") in FILE_DOC_TYPES and ("children" in doc or "data" in doc)
+
+
+def _folder_filter(folder: str | None) -> str | None:
+    if not folder:
+        return None
+    stripped = folder.strip("/")
+    return f"{stripped.lower()}/" if stripped else None
+
+
+def _doc_in_folder(doc: dict, folder_lower: str) -> bool:
+    path = doc.get("path", doc.get("_id", "")).lstrip("/").lower()
+    return path.startswith(folder_lower)
+
+
+def _file_doc_ranges(
+    folder: str | None,
+    obfuscate_passphrase: str | None,
+) -> list[dict[str, str | bool]]:
+    folder_lower = _folder_filter(folder)
+    if folder_lower and not obfuscate_passphrase:
+        startkeys = [folder_lower, f"/{folder_lower}"]
+        return [
+            {"startkey": startkey, "endkey": f"{startkey}\ufff0"}
+            for startkey in dict.fromkeys(startkeys)
+        ]
+
+    return [
+        {"endkey": "h:", "inclusive_end": False},
+        {"startkey": "h:~"},
+    ]
+
+
+def _page_batch_size(limit: int, skip: int) -> int:
+    desired = limit + max(skip, 0)
+    return max(1, min(desired, FILE_DOC_PAGE_SIZE))
