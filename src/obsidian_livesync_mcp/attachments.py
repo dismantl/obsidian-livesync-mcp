@@ -70,27 +70,31 @@ class AttachmentOps:
         self, folder: str | None = None, limit: int = 100, skip: int = 0
     ) -> list[AttachmentMetadata]:
         """List binary attachment metadata."""
-        all_docs = await self._get_all_file_docs()
-        docs = [doc for doc in all_docs if doc.get("type") == "newnote"]
+        if limit <= 0:
+            return []
 
-        if folder:
-            folder_lower = folder.strip("/").lower() + "/"
-            docs = [
-                doc
-                for doc in docs
-                if doc.get("path", doc.get("_id", "")).lower().startswith(folder_lower)
-            ]
-
-        docs.sort(key=lambda doc: doc.get("mtime", 0), reverse=True)
-        return [self._attachment_metadata(doc) for doc in docs[skip : skip + limit]]
+        results: list[AttachmentMetadata] = []
+        seen = 0
+        async for doc in self._iter_file_docs(
+            folder=folder,
+            batch_size=_page_batch_size(limit, skip),
+        ):
+            if doc.get("type") != "newnote":
+                continue
+            if seen < skip:
+                seen += 1
+                continue
+            results.append(self._attachment_metadata(doc))
+            if len(results) >= limit:
+                break
+        return results
 
     async def find_attachment_embeds(self, path: str) -> list[BacklinkInfo]:
         """Find notes that reference an attachment by basename."""
         target_base = ref_basename(path)
-        all_docs = await self._get_all_file_docs()
         results: list[BacklinkInfo] = []
 
-        for doc in all_docs:
+        async for doc in self._iter_file_docs():
             if doc.get("type") == "newnote":
                 continue
             content = await self._read_text_doc_content(doc)
@@ -107,26 +111,21 @@ class AttachmentOps:
 
     async def find_orphan_attachments(self, folder: str | None = None) -> list[AttachmentMetadata]:
         """Find attachments that no note references."""
-        all_docs = await self._get_all_file_docs()
-        attachments = [doc for doc in all_docs if doc.get("type") == "newnote"]
-        notes = [doc for doc in all_docs if doc.get("type") != "newnote"]
-
-        if folder:
-            folder_lower = folder.strip("/").lower() + "/"
-            attachments = [
-                doc
-                for doc in attachments
-                if doc.get("path", doc.get("_id", "")).lower().startswith(folder_lower)
-            ]
-
+        folder_lower = folder.strip("/").lower() + "/" if folder else None
+        attachments: list[dict] = []
         referenced: set[str] = set()
-        for doc in notes:
-            content = await self._read_text_doc_content(doc)
-            if not content:
-                continue
-            referenced.update(ref_basename(ref) for ref in extract_attachment_refs(content))
 
-        attachments.sort(key=lambda doc: doc.get("mtime", 0), reverse=True)
+        async for doc in self._iter_file_docs():
+            if doc.get("type") == "newnote":
+                doc_path = doc.get("path", doc.get("_id", "")).lower()
+                if not folder_lower or doc_path.startswith(folder_lower):
+                    attachments.append(doc)
+                continue
+
+            content = await self._read_text_doc_content(doc)
+            if content:
+                referenced.update(ref_basename(ref) for ref in extract_attachment_refs(content))
+
         return [
             self._attachment_metadata(doc)
             for doc in attachments
@@ -188,8 +187,7 @@ class AttachmentOps:
 
         note_paths: list[str] = []
         if rewrite_links:
-            all_docs = await self._get_all_file_docs()
-            for doc in all_docs:
+            async for doc in self._iter_file_docs():
                 if doc.get("type") == "newnote":
                     continue
                 content = await self._read_text_doc_content(doc)
@@ -388,6 +386,11 @@ class AttachmentOps:
 
 def _is_livesync_plain_text_path(path: str) -> bool:
     return path.lower().endswith(tuple(_LIVESYNC_PLAIN_TEXT_EXTENSIONS))
+
+
+def _page_batch_size(limit: int, skip: int) -> int:
+    desired = limit + max(skip, 0)
+    return max(1, min(desired, 100))
 
 
 def _response_rev(resp) -> str | None:

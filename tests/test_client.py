@@ -1138,9 +1138,51 @@ async def test_list_notes(client):
 
     results = await client.list_notes()
     assert len(results) == 2
-    # Sorted by mtime descending
-    assert results[0].path == "Notes/b.md"
-    assert results[1].path == "Notes/a.md"
+    # Sorted by stable _id/path order for bounded CouchDB pagination.
+    assert results[0].path == "Notes/a.md"
+    assert results[1].path == "Notes/b.md"
+
+
+@respx.mock
+async def test_list_notes_requests_bounded_all_docs_pages(client):
+    """One list page should not request an unbounded full-vault _all_docs result."""
+    docs = [_make_parent_doc(f"notes/{i}.md", [f"h:c{i}"], path=f"Notes/{i}.md") for i in range(5)]
+    seen_limits: list[str | None] = []
+
+    def all_docs_page(request):
+        seen_limits.append(request.url.params.get("limit"))
+        return Response(200, json={"rows": [{"id": doc["_id"], "doc": doc} for doc in docs[:2]]})
+
+    respx.get(f"{BASE}/_all_docs").mock(side_effect=all_docs_page)
+
+    results = await client.list_notes(limit=2)
+
+    assert [note.path for note in results] == ["Notes/0.md", "Notes/1.md"]
+    assert seen_limits == ["2"]
+
+
+@respx.mock
+async def test_list_notes_folder_filter_uses_prefix_range(client):
+    docs = [_make_parent_doc("notes/a.md", ["h:c1"], path="Notes/a.md")]
+    seen_params: list[dict[str, str]] = []
+
+    def all_docs_page(request):
+        seen_params.append(dict(request.url.params))
+        return Response(200, json={"rows": [{"id": docs[0]["_id"], "doc": docs[0]}]})
+
+    respx.get(f"{BASE}/_all_docs").mock(side_effect=all_docs_page)
+
+    results = await client.list_notes(folder="Notes", limit=1)
+
+    assert [note.path for note in results] == ["Notes/a.md"]
+    assert seen_params == [
+        {
+            "include_docs": "true",
+            "limit": "1",
+            "startkey": '"notes/"',
+            "endkey": '"notes/\\ufff0"',
+        }
+    ]
 
 
 @respx.mock

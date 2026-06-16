@@ -3,11 +3,15 @@
 import base64
 
 import pytest
+import respx
+from httpx import Response
 
 from obsidian_livesync_mcp.attachments import AttachmentOps
 from obsidian_livesync_mcp.client import ObsidianVaultClient
 from obsidian_livesync_mcp.config import Config
 from obsidian_livesync_mcp.models import NoteContent
+
+BASE = "http://test:5984/test-vault"
 
 
 class _Response:
@@ -47,6 +51,8 @@ class _MemoryAttachmentClient(AttachmentOps):
         self.writes = []
         self.put_docs = []
         self.after_put = None
+        self.iter_file_docs_calls = 0
+        self.get_all_file_docs_calls = 0
 
     async def _get_client(self):
         return _PutClient(self)
@@ -59,7 +65,26 @@ class _MemoryAttachmentClient(AttachmentOps):
         return dict(doc) if doc else None
 
     async def _get_all_file_docs(self, include_deleted: bool = False):
+        self.get_all_file_docs_calls += 1
         return [doc for doc in self.docs.values() if include_deleted or not doc.get("deleted")]
+
+    async def _iter_file_docs(
+        self,
+        *,
+        include_deleted: bool = False,
+        folder: str | None = None,
+        batch_size: int = 100,
+    ):
+        self.iter_file_docs_calls += 1
+        folder_lower = folder.strip("/").lower() + "/" if folder else None
+        for doc in self.docs.values():
+            if not include_deleted and doc.get("deleted"):
+                continue
+            if folder_lower and not doc.get("path", doc.get("_id", "")).lower().startswith(
+                folder_lower
+            ):
+                continue
+            yield doc
 
     async def _read_note_content(self, doc):
         return doc.get("content")
@@ -223,8 +248,41 @@ async def test_list_attachments_filters_sorts_and_paginates():
     results = await client.list_attachments(folder="Attachments", limit=1, skip=1)
 
     assert len(results) == 1
-    assert results[0].path == "Attachments/a.png"
-    assert results[0].extension == "png"
+    assert results[0].path == "Attachments/b.pdf"
+    assert results[0].extension == "pdf"
+    assert client.get_all_file_docs_calls == 0
+    assert client.iter_file_docs_calls == 1
+
+
+@respx.mock
+async def test_list_attachments_requests_bounded_all_docs_pages():
+    client = ObsidianVaultClient(
+        Config(
+            couch_url="http://test:5984",
+            couch_user="user",
+            couch_pass="pass",
+            db_name="test-vault",
+        )
+    )
+    docs = [
+        _doc("Attachments/a.png", "newnote", size=10),
+        _doc("Attachments/b.pdf", "newnote", size=20),
+    ]
+    seen_limits: list[str | None] = []
+
+    def all_docs_page(request):
+        seen_limits.append(request.url.params.get("limit"))
+        return Response(200, json={"rows": [{"id": doc["_id"], "doc": doc} for doc in docs]})
+
+    respx.get(f"{BASE}/_all_docs").mock(side_effect=all_docs_page)
+
+    results = await client.list_attachments(folder="Attachments", limit=2)
+
+    assert [attachment.path for attachment in results] == [
+        "Attachments/a.png",
+        "Attachments/b.pdf",
+    ]
+    assert seen_limits == ["2"]
 
 
 async def test_find_attachment_embeds_matches_basename_refs():
@@ -241,6 +299,8 @@ async def test_find_attachment_embeds_matches_basename_refs():
 
     assert [r.source_path for r in results] == ["Notes/a.md", "Notes/c.md"]
     assert "photo.png" in results[0].context
+    assert client.get_all_file_docs_calls == 0
+    assert client.iter_file_docs_calls == 1
 
 
 async def test_find_attachment_embeds_includes_legacy_notes_docs():
@@ -268,6 +328,8 @@ async def test_find_orphan_attachments():
     results = await client.find_orphan_attachments()
 
     assert [r.path for r in results] == ["Attachments/orphan.pdf"]
+    assert client.get_all_file_docs_calls == 0
+    assert client.iter_file_docs_calls == 1
 
 
 async def test_remove_attachment_blocks_when_embedded():
