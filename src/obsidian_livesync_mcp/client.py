@@ -1019,8 +1019,11 @@ def _file_doc_ranges(
 ) -> list[dict[str, str | bool]]:
     folder_lower = _folder_filter(folder)
     if folder_lower and not obfuscate_passphrase:
-        startkey = f"/{folder_lower}" if folder_lower.startswith("_") else folder_lower
-        return [{"startkey": startkey, "endkey": f"{startkey}\ufff0"}]
+        startkeys = [folder_lower, f"/{folder_lower}"]
+        return [
+            {"startkey": startkey, "endkey": f"{startkey}\ufff0"}
+            for startkey in dict.fromkeys(startkeys)
+        ]
 
     return [
         {"endkey": "h:", "inclusive_end": False},

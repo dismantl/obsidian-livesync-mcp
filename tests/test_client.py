@@ -1186,6 +1186,26 @@ async def test_list_notes_folder_filter_uses_prefix_range(client):
 
 
 @respx.mock
+async def test_list_notes_folder_filter_checks_slash_prefixed_range(client):
+    doc = _make_parent_doc("/notes/a.md", ["h:c1"], path="Notes/a.md")
+    seen_startkeys: list[str | None] = []
+
+    def all_docs_page(request):
+        startkey = request.url.params.get("startkey")
+        seen_startkeys.append(startkey)
+        if startkey == '"/notes/"':
+            return Response(200, json={"rows": [{"id": doc["_id"], "doc": doc}]})
+        return Response(200, json={"rows": []})
+
+    respx.get(f"{BASE}/_all_docs").mock(side_effect=all_docs_page)
+
+    results = await client.list_notes(folder="Notes", limit=1)
+
+    assert [note.path for note in results] == ["Notes/a.md"]
+    assert seen_startkeys == ['"notes/"', '"/notes/"']
+
+
+@respx.mock
 async def test_list_notes_folder_filter(client):
     docs = [
         _make_parent_doc("notes/a.md", ["h:c1"], path="Notes/a.md"),

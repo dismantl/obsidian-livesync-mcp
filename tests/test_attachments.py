@@ -285,6 +285,34 @@ async def test_list_attachments_requests_bounded_all_docs_pages():
     assert seen_limits == ["2"]
 
 
+@respx.mock
+async def test_list_attachments_folder_filter_checks_slash_prefixed_range():
+    client = ObsidianVaultClient(
+        Config(
+            couch_url="http://test:5984",
+            couch_user="user",
+            couch_pass="pass",
+            db_name="test-vault",
+        )
+    )
+    doc = _doc("Attachments/a.png", "newnote", _id="/attachments/a.png", size=10)
+    seen_startkeys: list[str | None] = []
+
+    def all_docs_page(request):
+        startkey = request.url.params.get("startkey")
+        seen_startkeys.append(startkey)
+        if startkey == '"/attachments/"':
+            return Response(200, json={"rows": [{"id": doc["_id"], "doc": doc}]})
+        return Response(200, json={"rows": []})
+
+    respx.get(f"{BASE}/_all_docs").mock(side_effect=all_docs_page)
+
+    results = await client.list_attachments(folder="Attachments", limit=1)
+
+    assert [attachment.path for attachment in results] == ["Attachments/a.png"]
+    assert seen_startkeys == ['"attachments/"', '"/attachments/"']
+
+
 async def test_find_attachment_embeds_matches_basename_refs():
     client = _MemoryAttachmentClient(
         [
