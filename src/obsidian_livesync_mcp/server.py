@@ -5,6 +5,7 @@ import base64
 import functools
 import logging
 import os
+import shlex
 from pathlib import PurePosixPath
 
 import httpx
@@ -566,12 +567,13 @@ async def create_download_url(path: str, ttl_seconds: int | None = None) -> str:
     record = _link_store.create(path, mode="download", ttl_seconds=ttl)
     url = f"{resource_url}/download/{record.token}"
     filename = PurePosixPath(path).name or "download"
+    filename_arg = shlex.quote(filename)
     return (
         f"url: {url}\n"
         f"expires_at: {record.expires_at:.0f}\n"
         f"size: {info.size}\n"
         f"content_type: {info.content_type}\n"
-        f"curl: curl -L -o {filename} '{url}'"
+        f"curl: curl -L -o {filename_arg} '{url}'"
     )
 
 

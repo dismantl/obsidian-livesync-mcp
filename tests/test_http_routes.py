@@ -1,5 +1,6 @@
 """Tests for out-of-band attachment transfer HTTP routes."""
 
+import asyncio
 import base64
 
 from starlette.applications import Starlette
@@ -16,12 +17,16 @@ class _FakeTransferClient:
         self.chunks = {}
         self.written_attachments = []
         self.written_notes = []
+        self.chunk_observations = []
+        self.on_chunk = None
 
     async def _get_doc(self, path: str):
         return self.docs.get(path)
 
     async def _iter_chunk_data(self, chunk_ids: list[str], batch_size: int = 64):
         for chunk_id in chunk_ids:
+            if self.on_chunk is not None:
+                self.chunk_observations.append(self.on_chunk())
             yield chunk_id, self.chunks[chunk_id]
 
     async def write_attachment(self, path: str, data: bytes):
@@ -71,6 +76,35 @@ def test_download_streams_binary_chunks():
     assert response.content == b"abcdef"
     assert response.headers["content-type"] == "application/octet-stream"
     assert "attachment" in response.headers["content-disposition"]
+
+
+def test_download_holds_transfer_semaphore_while_streaming(monkeypatch):
+    import obsidian_livesync_mcp.http_routes as routes
+
+    semaphore = asyncio.Semaphore(1)
+    monkeypatch.setattr(routes, "_TRANSFER_SEMAPHORE", semaphore)
+    fake = _FakeTransferClient()
+    fake.on_chunk = semaphore.locked
+    fake.docs["Attachments/a.bin"] = {
+        "_id": "attachments/a.bin",
+        "path": "Attachments/a.bin",
+        "type": "newnote",
+        "children": ["h:a", "h:b"],
+        "size": 6,
+    }
+    fake.chunks = {
+        "h:a": base64.b64encode(b"abc").decode("ascii"),
+        "h:b": base64.b64encode(b"def").decode("ascii"),
+    }
+    store = EphemeralLinkStore(now=lambda: 1000.0, token_factory=lambda: "download-token")
+    store.create("Attachments/a.bin", mode="download", ttl_seconds=60)
+
+    with TestClient(_app(fake, store)) as client:
+        response = client.get("/download/download-token")
+
+    assert response.status_code == 200
+    assert response.content == b"abcdef"
+    assert fake.chunk_observations == [True, True]
 
 
 def test_download_streams_text_chunks_as_utf8():

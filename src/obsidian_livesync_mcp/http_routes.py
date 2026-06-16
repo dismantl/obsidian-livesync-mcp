@@ -24,23 +24,20 @@ async def handle_download(request: Request, client, store: EphemeralLinkStore):
     _raise_for_status(status)
 
     assert record is not None
-    async with _TRANSFER_SEMAPHORE:
-        doc = await client._get_doc(record.vault_path)
-        if not doc or doc.get("deleted"):
-            raise HTTPException(status_code=404)
+    doc = await client._get_doc(record.vault_path)
+    if not doc or doc.get("deleted"):
+        raise HTTPException(status_code=404)
 
-        path = doc.get("path", record.vault_path)
-        content_type = mimetypes.guess_type(path)[0]
-        if content_type is None:
-            content_type = (
-                "application/octet-stream" if doc.get("type") == "newnote" else "text/plain"
-            )
+    path = doc.get("path", record.vault_path)
+    content_type = mimetypes.guess_type(path)[0]
+    if content_type is None:
+        content_type = "application/octet-stream" if doc.get("type") == "newnote" else "text/plain"
 
-        return StreamingResponse(
-            _iter_doc_bytes(client, doc),
-            media_type=content_type,
-            headers={"Content-Disposition": f'attachment; filename="{_download_name(path)}"'},
-        )
+    return StreamingResponse(
+        _iter_limited_doc_bytes(client, doc),
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{_download_name(path)}"'},
+    )
 
 
 async def handle_upload(request: Request, client, store: EphemeralLinkStore):
@@ -81,6 +78,12 @@ async def _iter_doc_bytes(client, doc: dict):
     else:
         async for _, data in client._iter_chunk_data(chunk_ids):
             yield data.encode("utf-8")
+
+
+async def _iter_limited_doc_bytes(client, doc: dict):
+    async with _TRANSFER_SEMAPHORE:
+        async for chunk in _iter_doc_bytes(client, doc):
+            yield chunk
 
 
 def _raise_for_status(status: ResolveStatus) -> None:

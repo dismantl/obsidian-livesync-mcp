@@ -431,6 +431,37 @@ async def test_create_download_url_tool_mints_capability_url():
     assert record.vault_path == "img/a.png"
 
 
+async def test_create_download_url_tool_shell_quotes_output_filename():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+    from obsidian_livesync_mcp.links import EphemeralLinkStore
+    from obsidian_livesync_mcp.models import FileInfo
+
+    fake = AsyncMock()
+    fake.config.link_ttl_seconds = 300
+    fake.get_file_info.return_value = FileInfo(
+        path="img/bad;touch owned.png",
+        size=3,
+        is_binary=True,
+        content_type="image/png",
+        chunk_count=1,
+        ctime=1,
+        mtime=2,
+        inline_cost_bytes=4,
+    )
+    store = EphemeralLinkStore(now=lambda: 1000.0, token_factory=lambda: "download-token")
+    with (
+        patch.object(srv, "_transport", "streamable-http"),
+        patch.object(srv, "_resource_url", "https://mcp.example"),
+        patch.object(srv, "_link_store", store),
+        patch.object(srv, "_get_client", return_value=fake),
+    ):
+        result = await srv.create_download_url("img/bad;touch owned.png")
+
+    assert "curl -L -o 'bad;touch owned.png'" in result
+
+
 async def test_create_upload_url_tool_mints_capability_url_with_global_cap():
     from unittest.mock import AsyncMock, patch
 

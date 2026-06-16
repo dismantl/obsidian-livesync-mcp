@@ -89,18 +89,25 @@ class AttachmentOps:
 
         start = offset
         end = start + length
-        total_bytes = 0
+        total_bytes = max(int(doc.get("size", 0)), 0)
         data = bytearray()
 
-        async for _, chunk_data in self._iter_chunk_data(doc.get("children", [])):
-            raw = base64.b64decode(chunk_data)
-            chunk_start = total_bytes
-            chunk_end = total_bytes + len(raw)
-            if length > 0 and chunk_end > start and chunk_start < end:
-                piece_start = max(start - chunk_start, 0)
-                piece_end = min(end - chunk_start, len(raw))
-                data.extend(raw[piece_start:piece_end])
-            total_bytes = chunk_end
+        if length > 0 and start < total_bytes:
+            streamed_bytes = 0
+            async for _, chunk_data in self._iter_chunk_data(
+                doc.get("children", []),
+                batch_size=1,
+            ):
+                raw = base64.b64decode(chunk_data)
+                chunk_start = streamed_bytes
+                chunk_end = streamed_bytes + len(raw)
+                if chunk_end > start and chunk_start < end:
+                    piece_start = max(start - chunk_start, 0)
+                    piece_end = min(end - chunk_start, len(raw))
+                    data.extend(raw[piece_start:piece_end])
+                    if chunk_end >= end:
+                        break
+                streamed_bytes = chunk_end
 
         content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
         next_offset = min(start + len(data), total_bytes)

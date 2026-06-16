@@ -741,6 +741,43 @@ async def test_get_attachment_range_returns_byte_slice(client):
 
 
 @respx.mock
+async def test_get_attachment_range_stops_after_requested_window(client):
+    import base64 as _b64
+    import json as _json
+
+    doc = _make_parent_doc(
+        "attachments/a.bin",
+        ["h:a", "h:b", "h:c"],
+        path="Attachments/a.bin",
+        type="newnote",
+        size=9,
+    )
+    _mock_get_doc("attachments%2Fa.bin", doc)
+    chunks = {
+        "h:a": _b64.b64encode(b"abc").decode("ascii"),
+        "h:b": _b64.b64encode(b"def").decode("ascii"),
+        "h:c": _b64.b64encode(b"ghi").decode("ascii"),
+    }
+    seen_keys: list[list[str]] = []
+
+    def all_docs_batch(request):
+        keys = _json.loads(request.content)["keys"]
+        seen_keys.append(keys)
+        rows = [{"id": key, "doc": {"_id": key, "data": chunks[key]}} for key in keys]
+        return Response(200, json={"rows": rows})
+
+    respx.post(f"{BASE}/_all_docs").mock(side_effect=all_docs_batch)
+
+    result = await client.get_attachment_range("Attachments/a.bin", offset=0, length=2)
+
+    assert result is not None
+    assert result.data == b"ab"
+    assert result.total_bytes == 9
+    assert result.eof is False
+    assert seen_keys == [["h:a"]]
+
+
+@respx.mock
 async def test_get_attachment_range_enforces_max_bytes(client):
     doc = _make_parent_doc("attachments/a.bin", ["h:a"], type="newnote", size=3)
     _mock_get_doc("attachments%2Fa.bin", doc)
