@@ -62,7 +62,7 @@ OAUTH_AUTHORIZED_EMAIL=you@example.com
 
 All source code lives under `src/obsidian_livesync_mcp/`. There are two entry points that share a common async client:
 
-- **`server.py`** — FastMCP server exposing 20 tools over stdio. Uses a lazy-initialized global `ObsidianVaultClient` singleton.
+- **`server.py`** — FastMCP server exposing the MCP tool surface over stdio or streamable HTTP. Uses a lazy-initialized global `ObsidianVaultClient` singleton.
 - **`cli.py`** — Argparse CLI (`obsidian` command) with subcommands. Runs async operations via `asyncio.run()`.
 
 Both delegate all CouchDB interaction to:
