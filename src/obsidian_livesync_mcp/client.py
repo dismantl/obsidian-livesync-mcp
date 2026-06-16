@@ -61,6 +61,14 @@ FILE_DOC_PAGE_SIZE = 100
 CHUNK_DATA_BATCH_SIZE = 64
 
 
+class MissingChunksError(ValueError):
+    """Raised when a chunk batch references chunks that are not live."""
+
+    def __init__(self, missing: list[str]):
+        self.missing = missing
+        super().__init__(f"Missing {len(missing)} chunk(s): {missing[:3]}")
+
+
 @dataclass
 class PruneReport:
     total_chunks: int
@@ -191,7 +199,7 @@ class ObsidianVaultClient(AttachmentOps):
                 yield chunk_id, doc["data"]
 
             if missing:
-                raise ValueError(f"Missing {len(missing)} chunk(s): {missing[:3]}")
+                raise MissingChunksError(missing)
 
     # INVARIANT: every chunk a parent will reference is PUT/resurrected-live by
     # _put_chunk_doc before the parent doc is written (see _write_file_doc).
@@ -523,14 +531,46 @@ class ObsidianVaultClient(AttachmentOps):
             fits_inline=None if inline_budget_bytes is None else inline_cost <= inline_budget_bytes,
         )
 
-    async def read_note_range(self, path: str, offset: int, length: int) -> NoteRange | None:
+    async def read_note_range(
+        self,
+        path: str,
+        offset: int,
+        length: int,
+        *,
+        retries: int = READ_RETRIES,
+        retry_delay: float = READ_RETRY_DELAY,
+    ) -> NoteRange | None:
         """Read a character range from a text note without materializing it."""
         if length < 0:
             raise ValueError("length must be >= 0")
 
-        doc = await self._get_doc(path)
-        if not doc or doc.get("deleted"):
-            return None
+        last_missing: list[str] = []
+        for attempt in range(retries + 1):
+            doc = await self._get_doc(path)
+            if not doc or doc.get("deleted"):
+                return None
+
+            try:
+                return await self._read_note_range_from_doc(doc, path, offset, length)
+            except MissingChunksError as e:
+                last_missing = e.missing
+                if attempt < retries:
+                    await asyncio.sleep(retry_delay)
+                    continue
+                raise ValueError(
+                    f"Missing {len(last_missing)} chunk(s) for {path} after "
+                    f"{retries + 1} attempt(s): {last_missing[:3]}"
+                ) from e
+
+        return None
+
+    async def _read_note_range_from_doc(
+        self,
+        doc: dict,
+        path: str,
+        offset: int,
+        length: int,
+    ) -> NoteRange:
         if doc.get("type") == "newnote":
             raise ValueError(
                 "read_note_range only supports text files; use attachment tools for binary files"

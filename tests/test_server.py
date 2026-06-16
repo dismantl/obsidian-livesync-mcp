@@ -270,6 +270,8 @@ async def test_get_file_info_tool_formats_metadata():
     assert "path: Notes/a.txt" in result
     assert "inline_cost_bytes: 12" in result
     assert "fits_inline: True" in result
+    assert "tools: read_note, read_note_range, get_attachment" in result
+    assert "create_download_url" not in result
 
 
 async def test_read_note_range_tool_formats_range():
@@ -319,6 +321,31 @@ async def test_read_note_tool_size_guard_uses_file_info_before_full_read():
     fake.read_note.assert_not_awaited()
     assert "read_note_range" in result
     assert "max_bytes=1000000" in result
+
+
+async def test_read_note_tool_binary_guidance_lists_available_tools():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+    from obsidian_livesync_mcp.models import FileInfo
+
+    fake = AsyncMock()
+    fake.get_file_info.return_value = FileInfo(
+        path="Attachments/pic.png",
+        size=20,
+        is_binary=True,
+        content_type="image/png",
+        chunk_count=1,
+        ctime=1,
+        mtime=2,
+        inline_cost_bytes=28,
+    )
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.read_note("Attachments/pic.png")
+
+    fake.read_note.assert_not_awaited()
+    assert "Use get_attachment" in result
+    assert "create_download_url" not in result
 
 
 async def test_add_attachment_tool_decodes_base64():

@@ -163,7 +163,7 @@ async def get_file_info(path: str, inline_budget_bytes: int | None = None) -> st
     if info is None:
         return f"File not found: {path}"
     lines = [f"{key}: {value}" for key, value in info.to_dict().items()]
-    lines.append("tools: read_note, read_note_range, get_attachment, create_download_url")
+    lines.append("tools: read_note, read_note_range, get_attachment")
     return "\n".join(lines)
 
 
@@ -183,7 +183,7 @@ async def read_note(path: str, max_bytes: int = 1_000_000) -> str:
     if info.is_binary:
         return (
             f"Binary file ({info.size} bytes). Use get_attachment for small binary files "
-            "or create_download_url over streamable HTTP."
+            "or list_attachments to inspect available files."
         )
     if info.size > max_bytes:
         return (

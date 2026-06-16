@@ -643,6 +643,34 @@ async def test_read_note_range_negative_offset_reads_tail(client):
 
 
 @respx.mock
+async def test_read_note_range_retries_transient_missing_chunk(client):
+    """A stale parent is re-fetched so a concurrent rewrite's chunks resolve."""
+    from unittest.mock import AsyncMock, patch
+
+    stale_doc = _make_parent_doc("notes/hot.md", ["h:old"], size=5)
+    fresh_doc = _make_parent_doc("notes/hot.md", ["h:new"], size=5)
+    respx.get(f"{BASE}/notes%2Fhot.md").mock(
+        side_effect=[
+            Response(200, json=stale_doc),
+            Response(200, json=fresh_doc),
+        ]
+    )
+    respx.post(f"{BASE}/_all_docs").mock(
+        side_effect=[
+            Response(200, json={"rows": []}),
+            Response(200, json={"rows": [{"id": "h:new", "doc": {"data": "Hello"}}]}),
+        ]
+    )
+
+    with patch("obsidian_livesync_mcp.client.asyncio.sleep", new=AsyncMock()) as sleep:
+        result = await client.read_note_range("Notes/hot.md", offset=0, length=5)
+
+    assert result is not None
+    assert result.content == "Hello"
+    sleep.assert_awaited_once()
+
+
+@respx.mock
 async def test_read_note_range_rejects_binary(client):
     doc = _make_parent_doc("attachments/pic.png", ["h:c1"], type="newnote")
     _mock_get_doc("attachments%2Fpic.png", doc)
