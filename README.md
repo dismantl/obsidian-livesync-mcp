@@ -7,6 +7,7 @@ No Obsidian app required. Works on headless servers, in CI pipelines, from AI ag
 ## Features
 
 - **Full vault CRUD** — read, write, append, delete, and search notes
+- **Large note helpers** — inspect size/cost and read text notes by character range
 - **Attachments** — add, get, remove, list, find embeds/orphans, and move/rename binary files with link rewriting
 - **Frontmatter & tags** — read/update YAML properties, list and search by tag
 - **Backlinks & outbound links** — find connections between notes via content scanning
@@ -183,7 +184,9 @@ docker run -p 8080:8080 \
 | Tool | Description |
 |------|-------------|
 | `list_notes` | List notes with metadata, optionally filtered by folder |
+| `get_file_info` | Inspect size, type, content type, chunk count, and inline cost without fetching chunks |
 | `read_note` | Read the full content of a note |
+| `read_note_range` | Read a character range from a text note, including head/tail slices |
 | `write_note` | Create or update a note |
 | `search_notes` | Search note content (case-insensitive) |
 | `append_note` | Append content to an existing note |
@@ -202,6 +205,12 @@ docker run -p 8080:8080 \
 | `find_attachment_embeds` | Find notes that embed or link to an attachment |
 | `find_orphan_attachments` | List attachments that no note references |
 | `move_attachment` | Move or rename an attachment and rewrite note references |
+
+### Large Text Notes
+
+Use `get_file_info` before reading unknown-size files. It returns the stored byte size, text/binary classification, content type, chunk count, and estimated inline byte cost. If a note is too large for a full `read_note`, use `read_note_range` to page through it by character offset. Negative offsets read relative to the end, which is useful for tail reads.
+
+Large text writes can already be done incrementally: create the first chunk of content with `write_note`, then add subsequent chunks with `append_note`. Both paths write LiveSync-compatible documents and chunks.
 
 ### Attachments
 

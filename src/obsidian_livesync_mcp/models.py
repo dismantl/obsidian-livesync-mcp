@@ -41,6 +41,56 @@ class NoteContent:
 
 
 @dataclass
+class NoteRange:
+    path: str
+    content: str
+    offset: int
+    length: int
+    next_offset: int
+    eof: bool
+    total_chars: int
+
+    def to_dict(self) -> dict:
+        return {
+            "path": self.path,
+            "content": self.content,
+            "offset": self.offset,
+            "length": self.length,
+            "next_offset": self.next_offset,
+            "eof": self.eof,
+            "total_chars": self.total_chars,
+        }
+
+
+@dataclass
+class FileInfo:
+    path: str
+    size: int
+    is_binary: bool
+    content_type: str
+    chunk_count: int
+    ctime: int
+    mtime: int
+    inline_cost_bytes: int
+    fits_inline: bool | None = None
+
+    def to_dict(self) -> dict:
+        result = {
+            "path": self.path,
+            "size": self.size,
+            "is_binary": self.is_binary,
+            "content_type": self.content_type,
+            "chunks": self.chunk_count,
+            "ctime": self.ctime,
+            "mtime": self.mtime,
+            "inline_cost_bytes": self.inline_cost_bytes,
+        }
+        if self.fits_inline is not None:
+            result["fits_inline"] = self.fits_inline
+        return result
+
+
+@dataclass
 class AttachmentMetadata:
     path: str
     size: int

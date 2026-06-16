@@ -194,7 +194,7 @@ class TestStreamableHttpASGI:
         assert body["result"]["serverInfo"]["name"] == "obsidian-livesync-mcp"
 
     def test_app_lists_registered_tools(self, http_server_module):
-        """All 20 MCP tools should be visible through the ASGI app."""
+        """All MCP tools should be visible through the ASGI app."""
         app = http_server_module.mcp.streamable_http_app()
         with TestClient(app) as client:
             # Initialize first (required by protocol)
@@ -205,7 +205,9 @@ class TestStreamableHttpASGI:
         tool_names = {t["name"] for t in tools}
         expected = {
             "list_notes",
+            "get_file_info",
             "read_note",
+            "read_note_range",
             "write_note",
             "search_notes",
             "append_note",
@@ -241,6 +243,82 @@ class TestStreamableHttpASGI:
 
 
 # ── Attachment tools ─────────────────────────────────────────────
+
+
+async def test_get_file_info_tool_formats_metadata():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+    from obsidian_livesync_mcp.models import FileInfo
+
+    fake = AsyncMock()
+    fake.get_file_info.return_value = FileInfo(
+        path="Notes/a.txt",
+        size=12,
+        is_binary=False,
+        content_type="text/plain",
+        chunk_count=2,
+        ctime=1,
+        mtime=2,
+        inline_cost_bytes=12,
+        fits_inline=True,
+    )
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.get_file_info("Notes/a.txt", inline_budget_bytes=20)
+
+    fake.get_file_info.assert_awaited_once_with("Notes/a.txt", inline_budget_bytes=20)
+    assert "path: Notes/a.txt" in result
+    assert "inline_cost_bytes: 12" in result
+    assert "fits_inline: True" in result
+
+
+async def test_read_note_range_tool_formats_range():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+    from obsidian_livesync_mcp.models import NoteRange
+
+    fake = AsyncMock()
+    fake.read_note_range.return_value = NoteRange(
+        path="Notes/a.md",
+        content="hello",
+        offset=0,
+        length=5,
+        next_offset=5,
+        eof=False,
+        total_chars=20,
+    )
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.read_note_range("Notes/a.md", offset=0, length=5)
+
+    fake.read_note_range.assert_awaited_once_with("Notes/a.md", offset=0, length=5)
+    assert "Notes/a.md chars 0-5 of 20" in result
+    assert result.endswith("\nhello")
+
+
+async def test_read_note_tool_size_guard_uses_file_info_before_full_read():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+    from obsidian_livesync_mcp.models import FileInfo
+
+    fake = AsyncMock()
+    fake.get_file_info.return_value = FileInfo(
+        path="Notes/big.md",
+        size=2_000_000,
+        is_binary=False,
+        content_type="text/markdown",
+        chunk_count=10,
+        ctime=1,
+        mtime=2,
+        inline_cost_bytes=2_000_000,
+    )
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.read_note("Notes/big.md", max_bytes=1_000_000)
+
+    fake.read_note.assert_not_awaited()
+    assert "read_note_range" in result
+    assert "max_bytes=1000000" in result
 
 
 async def test_add_attachment_tool_decodes_base64():
