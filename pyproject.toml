@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "obsidian-livesync-mcp"
-version = "0.1.0"
+version = "0.4.1"
 description = "MCP server and CLI for Obsidian vault via CouchDB LiveSync — no app required"
 requires-python = ">=3.10"
 license = "MIT"
