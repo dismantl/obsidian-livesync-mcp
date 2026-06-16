@@ -58,7 +58,14 @@ async def handle_upload(request: Request, client, store: EphemeralLinkStore):
 
         raw = bytes(data)
         if _is_livesync_plain_text_path(record.vault_path):
-            await client.write_note(record.vault_path, raw.decode("utf-8"))
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Text uploads must be valid UTF-8",
+                ) from e
+            await client.write_note(record.vault_path, text)
         else:
             await client.write_attachment(record.vault_path, raw)
 

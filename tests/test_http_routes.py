@@ -199,6 +199,21 @@ def test_upload_routes_plain_text_paths_to_note_writer():
     assert fake.written_notes == [("Notes/a.md", "hello")]
 
 
+def test_upload_invalid_utf8_to_text_path_returns_400_without_writing():
+    fake = _FakeTransferClient()
+    store = EphemeralLinkStore(now=lambda: 1000.0, token_factory=lambda: "upload-token")
+    store.create("Notes/a.md", mode="upload", ttl_seconds=60, max_bytes=20)
+
+    with TestClient(_app(fake, store), raise_server_exceptions=False) as client:
+        response = client.put("/upload/upload-token", content=b"\xff")
+        retry = client.put("/upload/upload-token", content=b"hello")
+
+    assert response.status_code == 400
+    assert retry.status_code == 404
+    assert fake.written_notes == []
+    assert fake.written_attachments == []
+
+
 def test_oversized_upload_returns_413():
     fake = _FakeTransferClient()
     store = EphemeralLinkStore(now=lambda: 1000.0, token_factory=lambda: "upload-token")
