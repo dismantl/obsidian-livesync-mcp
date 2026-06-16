@@ -264,6 +264,11 @@ obsidian attach orphans Attachments
 obsidian attach mv "Attachments/photo.png" "Media/photo.png"
 obsidian attach rm "Media/photo.png" -y
 
+# Health and repair
+obsidian health "Sample/todo.md"
+obsidian repair "Sample/todo.md" --from-file ./todo.md
+obsidian repair "Sample/photo.png" --from-file ./photo.png --binary
+
 # List folders
 obsidian folders
 obsidian tree                            # alias

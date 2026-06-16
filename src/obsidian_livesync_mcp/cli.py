@@ -104,6 +104,25 @@ async def _cmd_prune_orphans(client: ObsidianVaultClient, args):
         print("Dry run - nothing deleted. Re-run with --delete to remove.")
 
 
+async def _cmd_health(client: ObsidianVaultClient, args):
+    health = await client.health_check_note(args.path)
+    print(f"{health.path}  ({health.size} bytes, {health.child_count} chunks)")
+    print(f"  live={health.live}  tombstoned={health.tombstoned}  missing={health.missing}")
+    for chunk_id in health.bad_chunk_ids[:10]:
+        print(f"  bad: {chunk_id}")
+
+
+async def _cmd_repair(client: ObsidianVaultClient, args):
+    try:
+        with open(args.from_file, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        print(f"Error reading file: {e}", file=sys.stderr)
+        sys.exit(1)
+    ok = await client.repair_note_from_bytes(args.path, raw, is_text=not args.binary)
+    print("Repair OK - read-back succeeded." if ok else "Repair failed.")
+
+
 async def _cmd_props(client: ObsidianVaultClient, args):
     if args.set:
         properties = {}
@@ -317,6 +336,22 @@ def build_parser() -> argparse.ArgumentParser:
         "Default is a dry run that only lists them.",
     )
 
+    # health
+    p_health = sub.add_parser(
+        "health", help="Classify a note's chunk children as live/dead/missing"
+    )
+    p_health.add_argument("path", help="Vault path, e.g. Sample/example.md")
+
+    # repair
+    p_repair = sub.add_parser("repair", help="Repair a note's chunks from a trusted local file")
+    p_repair.add_argument("path", help="Vault path to repair")
+    p_repair.add_argument(
+        "--from-file",
+        required=True,
+        help="Local file whose bytes are the source of truth",
+    )
+    p_repair.add_argument("--binary", action="store_true", help="Treat source as binary")
+
     # props
     p_props = sub.add_parser("props", help="Read/set frontmatter properties")
     p_props.add_argument("path", help="Vault path to the note")
@@ -391,6 +426,8 @@ def main():
         "delete": _cmd_delete,
         "rm": _cmd_delete,
         "prune-orphans": _cmd_prune_orphans,
+        "health": _cmd_health,
+        "repair": _cmd_repair,
         "props": _cmd_props,
         "tags": _cmd_tags,
         "backlinks": _cmd_backlinks,

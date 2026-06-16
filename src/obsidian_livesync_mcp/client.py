@@ -56,6 +56,18 @@ class PruneReport:
     deleted: int
 
 
+@dataclass
+class NoteHealth:
+    doc_id: str
+    path: str
+    size: int
+    child_count: int
+    live: int
+    tombstoned: int
+    missing: int
+    bad_chunk_ids: list[str]
+
+
 class ObsidianVaultClient(AttachmentOps):
     """Async client for reading/writing Obsidian vault docs in CouchDB."""
 
@@ -324,6 +336,88 @@ class ObsidianVaultClient(AttachmentOps):
             orphan_chunk_ids=orphan_chunk_ids,
             deleted=deleted,
         )
+
+    async def health_check_note(self, path: str) -> NoteHealth:
+        """Classify a note's chunk children as live, tombstoned, or missing."""
+        doc = await self._get_doc(path)
+        if not doc:
+            raise ValueError(f"Note not found: {path}")
+
+        children = doc.get("children", [])
+        live = tombstoned = missing = 0
+        bad_chunk_ids: list[str] = []
+
+        if children:
+            client = await self._get_client()
+            resp = await client.post(
+                "/_all_docs",
+                json={"keys": children},
+                params={"include_docs": "true"},
+            )
+            resp.raise_for_status()
+            rows = {
+                row.get("id") or (row.get("doc") or {}).get("_id"): row
+                for row in resp.json().get("rows", [])
+            }
+
+            for child_id in children:
+                row = rows.get(child_id, {"error": "not_found"})
+                doc_body = row.get("doc") or {}
+                value = row.get("value") or {}
+                if row.get("error") == "not_found" or (not doc_body and not value):
+                    missing += 1
+                    bad_chunk_ids.append(child_id)
+                elif doc_body.get("_deleted") or value.get("deleted"):
+                    tombstoned += 1
+                    bad_chunk_ids.append(child_id)
+                elif "data" in doc_body:
+                    live += 1
+                else:
+                    missing += 1
+                    bad_chunk_ids.append(child_id)
+
+        return NoteHealth(
+            doc_id=doc["_id"],
+            path=doc.get("path", path),
+            size=doc.get("size", 0),
+            child_count=len(children),
+            live=live,
+            tombstoned=tombstoned,
+            missing=missing,
+            bad_chunk_ids=bad_chunk_ids,
+        )
+
+    async def repair_note_from_bytes(
+        self,
+        path: str,
+        raw: bytes,
+        *,
+        is_text: bool = True,
+    ) -> bool:
+        """Repair a note's chunks from trusted bytes and verify read-back.
+
+        Recomputes chunks from raw bytes with the current LiveSync-v3-compatible
+        splitter, creates or resurrects every chunk via _put_chunk_doc, writes
+        the parent last through _write_file_doc, then reads the note back through
+        the normal reassembly path.
+
+        Caveat: resurrecting a chunk server-side does not guarantee an Obsidian
+        client whose local PouchDB still has a winning tombstone for that ID
+        won't re-delete it on the next replication. If that happens, rebuild the
+        affected client's local DB so the resurrected revisions win.
+        """
+        await self._write_file_doc(path, raw, is_text=is_text)
+        content = await self.read_note(path)
+        if content is None:
+            raise ValueError(f"Repair wrote {path} but read-back failed")
+        actual = (
+            base64.b64decode(content.content)
+            if content.is_binary
+            else content.content.encode("utf-8")
+        )
+        if actual != raw:
+            raise ValueError(f"Repair wrote {path} but read-back content did not match")
+        return True
 
     # ── Read operations ────────────────────────────────────────────
 
