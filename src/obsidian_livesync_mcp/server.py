@@ -1,15 +1,18 @@
 """FastMCP server exposing Obsidian vault tools via stdio or streamable-http transport."""
 
 import asyncio
+import base64
 import functools
 import logging
 import os
+from pathlib import PurePosixPath
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
 from .client import ObsidianVaultClient
 from .config import Config
+from .links import EphemeralLinkStore
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +20,7 @@ _transport = os.environ.get("MCP_TRANSPORT", "stdio")
 _server_kwargs: dict = {}
 _oauth_provider = None
 _oauth_store = None
+_resource_url: str | None = None
 
 if _transport == "streamable-http":
     _server_kwargs["host"] = os.environ.get("MCP_HOST", "0.0.0.0")
@@ -83,6 +87,22 @@ if _transport == "streamable-http":
         )
 
 mcp = FastMCP("obsidian-livesync-mcp", **_server_kwargs)
+_link_store = EphemeralLinkStore()
+
+if _transport == "streamable-http":
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    from .http_routes import handle_download, handle_upload
+
+    @mcp.custom_route("/download/{token}", methods=["GET"])
+    async def download_route(request: Request) -> Response:
+        return await handle_download(request, _get_client(), _link_store)
+
+    @mcp.custom_route("/upload/{token}", methods=["PUT"])
+    async def upload_route(request: Request) -> Response:
+        return await handle_upload(request, _get_client(), _link_store)
+
 
 # Mount OAuth callback route when in OAuth mode
 if _oauth_provider is not None:
@@ -163,7 +183,7 @@ async def get_file_info(path: str, inline_budget_bytes: int | None = None) -> st
     if info is None:
         return f"File not found: {path}"
     lines = [f"{key}: {value}" for key, value in info.to_dict().items()]
-    lines.append("tools: read_note, read_note_range, get_attachment")
+    lines.append("tools: read_note, read_note_range, get_attachment, create_download_url")
     return "\n".join(lines)
 
 
@@ -183,7 +203,7 @@ async def read_note(path: str, max_bytes: int = 1_000_000) -> str:
     if info.is_binary:
         return (
             f"Binary file ({info.size} bytes). Use get_attachment for small binary files "
-            "or list_attachments to inspect available files."
+            "or create_download_url over streamable HTTP."
         )
     if info.size > max_bytes:
         return (
@@ -472,6 +492,40 @@ async def get_attachment(path: str, max_bytes: int = 10_485_760) -> str:
 
 @mcp.tool()
 @_tool_error_handler
+async def get_attachment_range(
+    path: str,
+    offset: int,
+    length: int,
+    max_bytes: int = 65_536,
+) -> str:
+    """Read a small byte range from a binary attachment as base64.
+
+    Args:
+        path: Vault path to the attachment
+        offset: Byte offset to start reading
+        length: Maximum number of bytes to return
+        max_bytes: Refuse ranges larger than this (default 64KB)
+    """
+    client = _get_client()
+    attachment_range = await client.get_attachment_range(
+        path,
+        offset=offset,
+        length=length,
+        max_bytes=max_bytes,
+    )
+    if attachment_range is None:
+        return f"Attachment not found: {path}"
+    data_base64 = base64.b64encode(attachment_range.data).decode("ascii")
+    eof = "true" if attachment_range.eof else "false"
+    return (
+        f"{attachment_range.path} bytes {attachment_range.offset}-"
+        f"{attachment_range.next_offset} of {attachment_range.total_bytes} "
+        f"({attachment_range.content_type}, eof={eof})\nbase64:\n{data_base64}"
+    )
+
+
+@mcp.tool()
+@_tool_error_handler
 async def list_attachments(folder: str | None = None, limit: int = 100, skip: int = 0) -> str:
     """List binary attachments in the vault.
 
@@ -486,6 +540,81 @@ async def list_attachments(folder: str | None = None, limit: int = 100, skip: in
         return "No attachments found."
     lines = [f"{att.path}  ({att.size} bytes, .{att.extension})" for att in attachments]
     return f"Found {len(attachments)} attachments:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+@_tool_error_handler
+async def create_download_url(path: str, ttl_seconds: int | None = None) -> str:
+    """Create an ephemeral HTTP download URL for a note or attachment.
+
+    Args:
+        path: Vault path to download
+        ttl_seconds: Optional token lifetime. Defaults to server config.
+    """
+    resource_url = _transfer_resource_url()
+    if resource_url is None:
+        return "Download URLs are not available over stdio; use streamable-http."
+
+    client = _get_client()
+    info = await client.get_file_info(path)
+    if info is None:
+        return f"File not found: {path}"
+
+    ttl = ttl_seconds if ttl_seconds is not None else client.config.link_ttl_seconds
+    if ttl <= 0:
+        raise ValueError("ttl_seconds must be positive")
+    record = _link_store.create(path, mode="download", ttl_seconds=ttl)
+    url = f"{resource_url}/download/{record.token}"
+    filename = PurePosixPath(path).name or "download"
+    return (
+        f"url: {url}\n"
+        f"expires_at: {record.expires_at:.0f}\n"
+        f"size: {info.size}\n"
+        f"content_type: {info.content_type}\n"
+        f"curl: curl -L -o {filename} '{url}'"
+    )
+
+
+@mcp.tool()
+@_tool_error_handler
+async def create_upload_url(
+    path: str,
+    ttl_seconds: int | None = None,
+    max_bytes: int | None = None,
+) -> str:
+    """Create an ephemeral HTTP upload URL for replacing a vault file.
+
+    Args:
+        path: Vault path to write
+        ttl_seconds: Optional token lifetime. Defaults to server config.
+        max_bytes: Optional per-token upload cap, bounded by server config.
+    """
+    resource_url = _transfer_resource_url()
+    if resource_url is None:
+        return "Upload URLs are not available over stdio; use streamable-http."
+    if not path.strip("/"):
+        raise ValueError("path is required")
+
+    client = _get_client()
+    ttl = ttl_seconds if ttl_seconds is not None else client.config.link_ttl_seconds
+    if ttl <= 0:
+        raise ValueError("ttl_seconds must be positive")
+
+    global_cap = client.config.max_upload_bytes
+    effective_max = min(max_bytes, global_cap) if max_bytes is not None else global_cap
+    record = _link_store.create(
+        path,
+        mode="upload",
+        ttl_seconds=ttl,
+        max_bytes=effective_max,
+    )
+    url = f"{resource_url}/upload/{record.token}"
+    return (
+        f"url: {url}\n"
+        f"expires_at: {record.expires_at:.0f}\n"
+        f"max_bytes: {effective_max}\n"
+        f"curl: curl -X PUT --data-binary @FILE '{url}'"
+    )
 
 
 @mcp.tool()
@@ -575,6 +704,12 @@ async def _initialize_oauth() -> None:
         await _oauth_store.ensure_db()
         await _oauth_provider.initialize()
         _oauth_store.start_purge_task()
+
+
+def _transfer_resource_url() -> str | None:
+    if _transport != "streamable-http" or not _resource_url:
+        return None
+    return _resource_url.rstrip("/")
 
 
 def main():

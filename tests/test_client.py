@@ -448,6 +448,26 @@ def test_attachment_content_to_dict_base64():
     assert d["path"] == "img/x.png"
 
 
+def test_attachment_range_to_dict_base64():
+    from obsidian_livesync_mcp.models import AttachmentRange
+
+    attachment_range = AttachmentRange(
+        path="img/x.png",
+        data=b"hello",
+        offset=2,
+        length=5,
+        next_offset=7,
+        eof=False,
+        total_bytes=20,
+        content_type="image/png",
+    )
+
+    d = attachment_range.to_dict()
+    assert d["data_base64"] == "aGVsbG8="
+    assert d["offset"] == 2
+    assert d["next_offset"] == 7
+
+
 def test_attachment_metadata_to_dict():
     from obsidian_livesync_mcp.models import AttachmentMetadata
 
@@ -689,6 +709,53 @@ async def test_read_note_range_surfaces_missing_chunk(client):
 
     with pytest.raises(ValueError, match="Missing 1 chunk"):
         await client.read_note_range("Notes/a.md", offset=0, length=10)
+
+
+@respx.mock
+async def test_get_attachment_range_returns_byte_slice(client):
+    import base64 as _b64
+
+    doc = _make_parent_doc(
+        "attachments/a.bin",
+        ["h:a", "h:b"],
+        path="Attachments/a.bin",
+        type="newnote",
+        size=6,
+    )
+    _mock_get_doc("attachments%2Fa.bin", doc)
+    _mock_all_docs(
+        {
+            "h:a": _b64.b64encode(b"abc").decode("ascii"),
+            "h:b": _b64.b64encode(b"def").decode("ascii"),
+        }
+    )
+
+    result = await client.get_attachment_range("Attachments/a.bin", offset=2, length=3)
+
+    assert result is not None
+    assert result.data == b"cde"
+    assert result.offset == 2
+    assert result.next_offset == 5
+    assert result.total_bytes == 6
+    assert result.eof is False
+
+
+@respx.mock
+async def test_get_attachment_range_enforces_max_bytes(client):
+    doc = _make_parent_doc("attachments/a.bin", ["h:a"], type="newnote", size=3)
+    _mock_get_doc("attachments%2Fa.bin", doc)
+
+    with pytest.raises(ValueError, match="max_bytes"):
+        await client.get_attachment_range("Attachments/a.bin", offset=0, length=3, max_bytes=2)
+
+
+@respx.mock
+async def test_get_attachment_range_rejects_text_file(client):
+    doc = _make_parent_doc("notes/a.md", ["h:a"], type="plain")
+    _mock_get_doc("notes%2Fa.md", doc)
+
+    with pytest.raises(ValueError, match="Not a binary attachment"):
+        await client.get_attachment_range("Notes/a.md", offset=0, length=3)
 
 
 # ── write_note ────────────────────────────────────────────────────

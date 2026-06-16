@@ -1,7 +1,14 @@
 """Configuration from environment variables with sensible defaults."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return int(raw)
 
 
 @dataclass(frozen=True)
@@ -22,6 +29,15 @@ class Config:
     # LiveSync path obfuscation passphrase (optional — set to match your
     # LiveSync client's passphrase when usePathObfuscation is enabled)
     obfuscate_passphrase: str | None = os.environ.get("OBSIDIAN_OBFUSCATE_PASSPHRASE") or None
+
+    # Ephemeral capability URLs for out-of-band transfers.
+    link_ttl_seconds: int = field(default_factory=lambda: _env_int("MCP_LINK_TTL_SECONDS", 300))
+    max_upload_bytes: int = field(
+        default_factory=lambda: _env_int("MCP_MAX_UPLOAD_BYTES", 100 * 1024 * 1024)
+    )
+    max_concurrent_transfers: int = field(
+        default_factory=lambda: _env_int("MCP_MAX_CONCURRENT_TRANSFERS", 2)
+    )
 
     # OAuth/OIDC configuration (optional — OAuth is opt-in, but all fields
     # are required once OAUTH_ISSUER_URL is set)
@@ -44,6 +60,12 @@ class Config:
                     "Without it, any user who can authenticate with the OIDC provider "
                     "would have full vault access."
                 )
+        if self.link_ttl_seconds <= 0:
+            raise ValueError("MCP_LINK_TTL_SECONDS must be positive.")
+        if self.max_upload_bytes <= 0:
+            raise ValueError("MCP_MAX_UPLOAD_BYTES must be positive.")
+        if self.max_concurrent_transfers <= 0:
+            raise ValueError("MCP_MAX_CONCURRENT_TRANSFERS must be positive.")
 
     def __repr__(self) -> str:
         return (

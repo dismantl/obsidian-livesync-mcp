@@ -33,6 +33,25 @@ def test_config_default_db_name():
     assert c.db_name == "obsidian-vault"
 
 
+def test_link_config_defaults():
+    c = Config(couch_url="http://host:5984")
+    assert c.link_ttl_seconds == 300
+    assert c.max_upload_bytes == 100 * 1024 * 1024
+    assert c.max_concurrent_transfers == 2
+
+
+def test_link_config_env_overrides(monkeypatch):
+    monkeypatch.setenv("MCP_LINK_TTL_SECONDS", "120")
+    monkeypatch.setenv("MCP_MAX_UPLOAD_BYTES", "2048")
+    monkeypatch.setenv("MCP_MAX_CONCURRENT_TRANSFERS", "4")
+
+    c = Config(couch_url="http://host:5984")
+
+    assert c.link_ttl_seconds == 120
+    assert c.max_upload_bytes == 2048
+    assert c.max_concurrent_transfers == 4
+
+
 def test_config_repr_masks_password():
     c = Config(couch_url="http://x", couch_user="admin", couch_pass="s3cret")
     r = repr(c)
