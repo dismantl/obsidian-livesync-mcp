@@ -62,7 +62,7 @@ OAUTH_AUTHORIZED_EMAIL=you@example.com
 
 All source code lives under `src/obsidian_livesync_mcp/`. There are two entry points that share a common async client:
 
-- **`server.py`** — FastMCP server exposing 20 tools over stdio. Uses a lazy-initialized global `ObsidianVaultClient` singleton.
+- **`server.py`** — FastMCP server exposing the MCP tool surface over stdio or streamable HTTP. Uses a lazy-initialized global `ObsidianVaultClient` singleton.
 - **`cli.py`** — Argparse CLI (`obsidian` command) with subcommands. Runs async operations via `asyncio.run()`.
 
 Both delegate all CouchDB interaction to:
@@ -73,7 +73,9 @@ Supporting modules:
 
 - **`config.py`** — Frozen dataclass reading env vars at startup.
 - **`attachments.py`** — `AttachmentOps` mixin inherited by `ObsidianVaultClient`. Handles binary attachment CRUD, embed/orphan discovery, and move-with-link-rewriting. Attachments are binary files stored as `type="newnote"` parent docs.
-- **`models.py`** — Data classes (`NoteMetadata`, `NoteContent`, `AttachmentMetadata`, `AttachmentContent`, `SearchResult`, `BacklinkInfo`, `FolderInfo`).
+- **`links.py`** — In-memory, short-lived capability-token store for out-of-band transfer URLs. Upload tokens are single-use; download tokens are reusable until expiry.
+- **`http_routes.py`** — Starlette handlers for `/download/{token}` and `/upload/{token}` custom routes. These stream/download bytes outside MCP tool responses.
+- **`models.py`** — Data classes (`NoteMetadata`, `NoteContent`, `NoteRange`, `FileInfo`, `AttachmentMetadata`, `AttachmentContent`, `AttachmentRange`, `SearchResult`, `BacklinkInfo`, `FolderInfo`).
 - **`utils.py`** — Path normalization, chunk ID generation, frontmatter/YAML parsing, wikilink/tag extraction, and attachment reference parsing/rewriting.
 
 ### OAuth Subsystem (optional)
@@ -112,6 +114,7 @@ These settings **must** be configured for compatibility:
 ## Key Patterns
 
 - **Server config** — transport mode (`MCP_TRANSPORT`), host/port, and auth are configured at module level via `FastMCP(...)` constructor kwargs in `_server_kwargs`. `mcp.run()` only takes `transport`.
+- **Transfer URLs** — `create_download_url` / `create_upload_url` require streamable HTTP. Set `MCP_RESOURCE_URL` to the server's public URL for remote clients; the localhost default is only useful from the same host. The custom routes are capability-token authenticated and are intentionally reachable without the MCP bearer token; use HTTPS in production. The in-memory store assumes one server worker.
 - **Conflict handling** — writes retry on HTTP 409 (CouchDB revision conflicts).
 - **Search** — uses CouchDB Mango queries with regex on chunk data, then maps matching chunks back to parent notes via a reverse chunk-to-parent map.
 - **Frontmatter** — parsed via regex extraction of `---\nYAML\n---` blocks, then `yaml.safe_load`.

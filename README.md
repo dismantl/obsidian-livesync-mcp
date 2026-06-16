@@ -116,10 +116,13 @@ export MCP_TRANSPORT="streamable-http"
 export MCP_HOST="0.0.0.0"    # optional, defaults to 0.0.0.0
 export MCP_PORT="8080"        # optional, defaults to 8080
 export MCP_API_KEY="your-secret-key"  # optional, enables Bearer token auth
+export MCP_RESOURCE_URL="https://your-mcp-server.example.com"  # public URL for remote transfer URLs
 python -m obsidian_livesync_mcp.server
 ```
 
-When `MCP_API_KEY` is set, clients must include `Authorization: Bearer your-secret-key` in requests. You can also set `MCP_RESOURCE_URL` to the server's public URL (defaults to `http://localhost:{MCP_PORT}`).
+When `MCP_API_KEY` is set, clients must include `Authorization: Bearer your-secret-key` in requests. Set `MCP_RESOURCE_URL` to the server's public URL for remote transfer URLs. If unset, generated URLs default to `http://localhost:{MCP_PORT}`, which is only useful from the same host.
+
+Large binary download/upload URLs are short-lived capability URLs served from `MCP_RESOURCE_URL`. They do not require the MCP bearer token, so use HTTPS in production. The in-memory link store assumes a single server worker.
 
 ### OAuth Authentication (for claude.ai and other remote MCP clients)
 
@@ -164,7 +167,10 @@ python -m obsidian_livesync_mcp.server
 | `OAUTH_CLIENT_SECRET` | For OAuth | Client secret for the OIDC provider |
 | `OAUTH_AUTHORIZED_EMAIL` | For OAuth | Email address authorized to access the vault |
 | `MCP_API_KEY` | No | Static Bearer token (works alongside or instead of OAuth) |
-| `MCP_RESOURCE_URL` | For OAuth | Public URL of the MCP server |
+| `MCP_RESOURCE_URL` | For OAuth / transfer URLs | Public URL of the MCP server |
+| `MCP_LINK_TTL_SECONDS` | No | Transfer URL lifetime in seconds (default 300) |
+| `MCP_MAX_UPLOAD_BYTES` | No | Global upload cap for capability URLs (default 100MB) |
+| `MCP_MAX_CONCURRENT_TRANSFERS` | No | Concurrent download/upload route limit (default 2) |
 
 ### Docker
 
@@ -200,7 +206,10 @@ docker run -p 8080:8080 \
 | `get_outbound_links` | List wikilinks from a note |
 | `add_attachment` | Add or replace a binary attachment from base64 bytes |
 | `get_attachment` | Download an attachment as base64, with a 10 MB default size guard |
+| `get_attachment_range` | Read a small byte range from a binary attachment as base64 |
 | `list_attachments` | List binary attachments with metadata |
+| `create_download_url` | Create a short-lived HTTP URL for downloading a note or attachment out-of-band |
+| `create_upload_url` | Create a short-lived HTTP URL for uploading/replacing a note or attachment out-of-band |
 | `remove_attachment` | Remove an attachment, blocking referenced files unless forced |
 | `find_attachment_embeds` | Find notes that embed or link to an attachment |
 | `find_orphan_attachments` | List attachments that no note references |
@@ -215,6 +224,8 @@ Large text writes can already be done incrementally: create the first chunk of c
 ### Attachments
 
 Attachment tools treat binary files as LiveSync `type="newnote"` parent documents. Over MCP, file bytes cross the boundary as base64 strings (`add_attachment`, `get_attachment`). The CLI uses real local files for upload/download. LiveSync plain-text file types (`.md`, `.txt`, `.svg`, `.html`, `.csv`, `.css`, `.js`, `.xml`, `.canvas`) should be managed with the note/text APIs instead of `add_attachment`.
+
+For large binary files over streamable HTTP, prefer `create_download_url` and `create_upload_url`, then use the returned `curl` command. The URL token is bound to one vault path server-side. Downloads are reusable until expiry; uploads are single-use. Use `get_attachment_range` only for small peeks such as file headers.
 
 Reference discovery matches by case-insensitive basename, the same limitation as the existing backlink scan. Link rewriting preserves basename-only references, but explicit path references must match the moved attachment path so duplicates in other folders are not rewritten. If two folders contain attachments with the same filename, embed/orphan results are ambiguous.
 

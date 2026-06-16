@@ -5,7 +5,7 @@ import logging
 import mimetypes
 import time
 
-from .models import AttachmentContent, AttachmentMetadata, BacklinkInfo
+from .models import AttachmentContent, AttachmentMetadata, AttachmentRange, BacklinkInfo
 from .utils import (
     encode_doc_id,
     extract_attachment_refs,
@@ -65,6 +65,62 @@ class AttachmentOps:
         if doc.get("type") != "newnote":
             raise ValueError(f"Not a binary attachment: {path}")
         return self._attachment_metadata(doc)
+
+    async def get_attachment_range(
+        self,
+        path: str,
+        offset: int,
+        length: int,
+        max_bytes: int = 65_536,
+    ) -> AttachmentRange | None:
+        """Read a small byte range from a binary attachment."""
+        if offset < 0:
+            raise ValueError("offset must be >= 0")
+        if length < 0:
+            raise ValueError("length must be >= 0")
+        if length > max_bytes:
+            raise ValueError(f"length {length} exceeds max_bytes={max_bytes}")
+
+        doc = await self._get_doc(path)
+        if not doc or doc.get("deleted"):
+            return None
+        if doc.get("type") != "newnote":
+            raise ValueError(f"Not a binary attachment: {path}")
+
+        start = offset
+        end = start + length
+        total_bytes = max(int(doc.get("size", 0)), 0)
+        data = bytearray()
+
+        if length > 0 and start < total_bytes:
+            streamed_bytes = 0
+            async for _, chunk_data in self._iter_chunk_data(
+                doc.get("children", []),
+                batch_size=1,
+            ):
+                raw = base64.b64decode(chunk_data)
+                chunk_start = streamed_bytes
+                chunk_end = streamed_bytes + len(raw)
+                if chunk_end > start and chunk_start < end:
+                    piece_start = max(start - chunk_start, 0)
+                    piece_end = min(end - chunk_start, len(raw))
+                    data.extend(raw[piece_start:piece_end])
+                    if chunk_end >= end:
+                        break
+                streamed_bytes = chunk_end
+
+        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        next_offset = min(start + len(data), total_bytes)
+        return AttachmentRange(
+            path=doc.get("path", path),
+            data=bytes(data),
+            offset=min(start, total_bytes),
+            length=len(data),
+            next_offset=next_offset,
+            eof=next_offset >= total_bytes,
+            total_bytes=total_bytes,
+            content_type=content_type,
+        )
 
     async def list_attachments(
         self, folder: str | None = None, limit: int = 100, skip: int = 0

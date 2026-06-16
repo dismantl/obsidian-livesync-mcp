@@ -221,7 +221,10 @@ class TestStreamableHttpASGI:
             "list_folders",
             "add_attachment",
             "get_attachment",
+            "get_attachment_range",
             "list_attachments",
+            "create_download_url",
+            "create_upload_url",
             "remove_attachment",
             "find_attachment_embeds",
             "find_orphan_attachments",
@@ -270,8 +273,7 @@ async def test_get_file_info_tool_formats_metadata():
     assert "path: Notes/a.txt" in result
     assert "inline_cost_bytes: 12" in result
     assert "fits_inline: True" in result
-    assert "tools: read_note, read_note_range, get_attachment" in result
-    assert "create_download_url" not in result
+    assert "tools: read_note, read_note_range, get_attachment, create_download_url" in result
 
 
 async def test_read_note_range_tool_formats_range():
@@ -323,7 +325,7 @@ async def test_read_note_tool_size_guard_uses_file_info_before_full_read():
     assert "max_bytes=1000000" in result
 
 
-async def test_read_note_tool_binary_guidance_lists_available_tools():
+async def test_read_note_tool_binary_guidance_lists_transfer_tool():
     from unittest.mock import AsyncMock, patch
 
     import obsidian_livesync_mcp.server as srv
@@ -345,7 +347,145 @@ async def test_read_note_tool_binary_guidance_lists_available_tools():
 
     fake.read_note.assert_not_awaited()
     assert "Use get_attachment" in result
-    assert "create_download_url" not in result
+    assert "create_download_url" in result
+
+
+async def test_get_attachment_range_tool_formats_base64():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+    from obsidian_livesync_mcp.models import AttachmentRange
+
+    fake = AsyncMock()
+    fake.get_attachment_range.return_value = AttachmentRange(
+        path="img/a.png",
+        data=b"abc",
+        offset=0,
+        length=3,
+        next_offset=3,
+        eof=True,
+        total_bytes=3,
+        content_type="image/png",
+    )
+    with patch.object(srv, "_get_client", return_value=fake):
+        result = await srv.get_attachment_range("img/a.png", offset=0, length=3)
+
+    fake.get_attachment_range.assert_awaited_once_with(
+        "img/a.png",
+        offset=0,
+        length=3,
+        max_bytes=65_536,
+    )
+    assert "img/a.png bytes 0-3 of 3" in result
+    assert "base64:" in result
+    assert "YWJj" in result
+
+
+async def test_create_download_url_tool_requires_streamable_http():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+
+    with (
+        patch.object(srv, "_transport", "stdio"),
+        patch.object(srv, "_get_client", return_value=AsyncMock()),
+    ):
+        result = await srv.create_download_url("img/a.png")
+
+    assert "not available over stdio" in result
+
+
+async def test_create_download_url_tool_mints_capability_url():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+    from obsidian_livesync_mcp.links import EphemeralLinkStore
+    from obsidian_livesync_mcp.models import FileInfo
+
+    fake = AsyncMock()
+    fake.config.link_ttl_seconds = 300
+    fake.get_file_info.return_value = FileInfo(
+        path="img/a.png",
+        size=3,
+        is_binary=True,
+        content_type="image/png",
+        chunk_count=1,
+        ctime=1,
+        mtime=2,
+        inline_cost_bytes=4,
+    )
+    store = EphemeralLinkStore(now=lambda: 1000.0, token_factory=lambda: "download-token")
+    with (
+        patch.object(srv, "_transport", "streamable-http"),
+        patch.object(srv, "_resource_url", "https://mcp.example"),
+        patch.object(srv, "_link_store", store),
+        patch.object(srv, "_get_client", return_value=fake),
+    ):
+        result = await srv.create_download_url("img/a.png")
+
+    assert "https://mcp.example/download/download-token" in result
+    assert "curl -L -o a.png" in result
+    record, status = store.resolve("download-token", mode="download")
+    assert status == "ok"
+    assert record is not None
+    assert record.vault_path == "img/a.png"
+
+
+async def test_create_download_url_tool_shell_quotes_output_filename():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+    from obsidian_livesync_mcp.links import EphemeralLinkStore
+    from obsidian_livesync_mcp.models import FileInfo
+
+    fake = AsyncMock()
+    fake.config.link_ttl_seconds = 300
+    fake.get_file_info.return_value = FileInfo(
+        path="img/bad;touch owned.png",
+        size=3,
+        is_binary=True,
+        content_type="image/png",
+        chunk_count=1,
+        ctime=1,
+        mtime=2,
+        inline_cost_bytes=4,
+    )
+    store = EphemeralLinkStore(now=lambda: 1000.0, token_factory=lambda: "download-token")
+    with (
+        patch.object(srv, "_transport", "streamable-http"),
+        patch.object(srv, "_resource_url", "https://mcp.example"),
+        patch.object(srv, "_link_store", store),
+        patch.object(srv, "_get_client", return_value=fake),
+    ):
+        result = await srv.create_download_url("img/bad;touch owned.png")
+
+    assert "curl -L -o 'bad;touch owned.png'" in result
+
+
+async def test_create_upload_url_tool_mints_capability_url_with_global_cap():
+    from unittest.mock import AsyncMock, patch
+
+    import obsidian_livesync_mcp.server as srv
+    from obsidian_livesync_mcp.links import EphemeralLinkStore
+
+    fake = AsyncMock()
+    fake.config.link_ttl_seconds = 300
+    fake.config.max_upload_bytes = 10
+    store = EphemeralLinkStore(now=lambda: 1000.0, token_factory=lambda: "upload-token")
+    with (
+        patch.object(srv, "_transport", "streamable-http"),
+        patch.object(srv, "_resource_url", "https://mcp.example/"),
+        patch.object(srv, "_link_store", store),
+        patch.object(srv, "_get_client", return_value=fake),
+    ):
+        result = await srv.create_upload_url("img/a.png", max_bytes=99)
+
+    assert "https://mcp.example/upload/upload-token" in result
+    assert "curl -X PUT --data-binary @FILE" in result
+    record, status = store.resolve("upload-token", mode="upload")
+    assert status == "ok"
+    assert record is not None
+    assert record.max_bytes == 10
 
 
 async def test_add_attachment_tool_decodes_base64():

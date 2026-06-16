@@ -127,6 +127,30 @@ class AttachmentContent:
 
 
 @dataclass
+class AttachmentRange:
+    path: str
+    data: bytes
+    offset: int
+    length: int
+    next_offset: int
+    eof: bool
+    total_bytes: int
+    content_type: str
+
+    def to_dict(self) -> dict:
+        return {
+            "path": self.path,
+            "data_base64": base64.b64encode(self.data).decode("ascii"),
+            "offset": self.offset,
+            "length": self.length,
+            "next_offset": self.next_offset,
+            "eof": self.eof,
+            "total_bytes": self.total_bytes,
+            "content_type": self.content_type,
+        }
+
+
+@dataclass
 class SearchResult:
     path: str
     matches: int
