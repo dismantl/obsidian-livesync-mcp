@@ -371,7 +371,7 @@ async def test_write_does_not_delete_orphan_chunks(client):
     Auto-deletion tombstones content-addressed chunks, which can break other
     notes and is the suspected cause of the 2026-06-15 tombstone incident.
     """
-    doc_id = "context/note.md"
+    doc_id = "sample/note.md"
     existing = _make_parent_doc(doc_id, ["h:oldchunk1", "h:oldchunk2"], _rev="5-old")
 
     _mock_get_doc(encode_doc_id(doc_id), existing)
@@ -382,7 +382,7 @@ async def test_write_does_not_delete_orphan_chunks(client):
         return_value=Response(200, json={"ok": True})
     )
 
-    await client.write_note("Context/note.md", "completely new content body")
+    await client.write_note("Sample/note.md", "completely new content body")
 
     assert not delete_route.called, "write_note must not DELETE any chunk doc"
 
@@ -466,13 +466,13 @@ async def test_write_resurrects_tombstoned_chunk(client):
             },
         )
     )
-    _mock_get_doc_404(encode_doc_id("context/new.md"))
-    _mock_get_doc_404(encode_doc_id("/context/new.md"))
-    respx.put(f"{BASE}/{encode_doc_id('context/new.md')}").mock(
+    _mock_get_doc_404(encode_doc_id("sample/new.md"))
+    _mock_get_doc_404(encode_doc_id("/sample/new.md"))
+    respx.put(f"{BASE}/{encode_doc_id('sample/new.md')}").mock(
         return_value=Response(201, json={"ok": True})
     )
 
-    await client.write_note("Context/new.md", content)
+    await client.write_note("Sample/new.md", content)
 
     lookup_body = _json.loads(tombstone_lookup.calls[0].request.content)
     assert lookup_body["keys"] == [chunk_id]
@@ -490,14 +490,14 @@ async def test_parent_put_happens_after_chunk_puts(client):
     respx.put(url__regex=rf"{BASE}/h%3A.*").mock(
         side_effect=lambda request: order.append("chunk") or Response(201, json={"ok": True})
     )
-    parent_id = encode_doc_id("context/ordered.md")
+    parent_id = encode_doc_id("sample/ordered.md")
     _mock_get_doc_404(parent_id)
-    _mock_get_doc_404(encode_doc_id("/context/ordered.md"))
+    _mock_get_doc_404(encode_doc_id("/sample/ordered.md"))
     respx.put(f"{BASE}/{parent_id}").mock(
         side_effect=lambda request: order.append("parent") or Response(201, json={"ok": True})
     )
 
-    await client.write_note("Context/ordered.md", content)
+    await client.write_note("Sample/ordered.md", content)
 
     assert order[-1] == "parent", "parent must be written last"
     assert order == ["chunk"] * len(expected_chunks) + ["parent"]
