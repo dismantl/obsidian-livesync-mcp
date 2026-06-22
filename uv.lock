@@ -389,6 +389,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "starlette" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "xxhash" },
 ]
 
@@ -419,6 +420,7 @@ requires-dist = [
     { name = "respx", marker = "extra == 'dev'", specifier = ">=0.22.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9.0" },
     { name = "starlette", specifier = ">=1.0.1" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "xxhash", specifier = ">=3.0" },
 ]
 provides-extras = ["oauth", "dev"]

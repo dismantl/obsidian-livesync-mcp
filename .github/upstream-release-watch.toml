@@ -1,0 +1,145 @@
+[upstream]
+owner = "vrtmrz"
+repo = "obsidian-livesync"
+release_limit = 20
+
+[issue]
+marker_prefix = "upstream-release-watch"
+
+[[areas]]
+name = "storage-format"
+risk = "high"
+upstream_paths = [
+  "src/lib/src/common/models/**",
+  "_types/src/lib/src/common/models/**",
+  "src/lib/src/managers/EntryManager/**",
+  "_types/src/lib/src/managers/EntryManager/**",
+  "src/lib/src/pouchdb/**",
+  "_types/src/lib/src/pouchdb/**",
+]
+local_paths = [
+  "src/obsidian_livesync_mcp/client.py",
+  "src/obsidian_livesync_mcp/models.py",
+  "tests/test_client.py",
+]
+review_notes = [
+  "Check parent document shape, chunk document shape, tombstones, and CouchDB query assumptions.",
+]
+
+[[areas]]
+name = "chunking-and-hashing"
+risk = "high"
+upstream_paths = [
+  "src/lib/src/string_and_binary/**",
+  "_types/src/lib/src/string_and_binary/**",
+  "src/lib/src/rpc/chunking.*",
+  "_types/src/lib/src/rpc/chunking.*",
+  "src/lib/src/common/models/shared.const*",
+  "_types/src/lib/src/common/models/shared.const*",
+]
+local_paths = [
+  "src/obsidian_livesync_mcp/chunking.py",
+  "src/obsidian_livesync_mcp/utils.py",
+  "tests/test_chunking.py",
+  "tests/test_utils.py",
+  "tests/fixtures/REFRESH.md",
+]
+review_notes = [
+  "Check splitter versions, chunk sizing, hash algorithms, ID prefixes, and golden fixture parity.",
+]
+
+[[areas]]
+name = "path-and-id-encoding"
+risk = "medium"
+upstream_paths = [
+  "src/lib/src/string_and_binary/path.*",
+  "_types/src/lib/src/string_and_binary/path.*",
+  "src/lib/src/common/models/db.const*",
+  "_types/src/lib/src/common/models/db.const*",
+  "src/lib/src/common/models/shared.const*",
+  "_types/src/lib/src/common/models/shared.const*",
+]
+local_paths = [
+  "src/obsidian_livesync_mcp/utils.py",
+  "src/obsidian_livesync_mcp/client.py",
+  "tests/test_utils.py",
+  "tests/test_client.py",
+]
+review_notes = [
+  "Check vault path normalization, slash handling, reserved CouchDB IDs, obfuscation, and chunk ID prefixes.",
+]
+
+[[areas]]
+name = "settings-defaults"
+risk = "medium"
+upstream_paths = [
+  "src/lib/src/common/models/setting.const*",
+  "_types/src/lib/src/common/models/setting.const*",
+  "src/lib/src/common/settingConstants.*",
+  "_types/src/lib/src/common/settingConstants.*",
+]
+local_paths = [
+  "README.md",
+  "src/obsidian_livesync_mcp/config.py",
+  "src/obsidian_livesync_mcp/chunking.py",
+  "tests/test_config.py",
+]
+review_notes = [
+  "Check defaults this repo assumes for LiveSync-compatible reads and writes.",
+]
+
+[[areas]]
+name = "sync-and-replication"
+risk = "medium"
+upstream_paths = [
+  "src/lib/src/managers/ChangeManager.*",
+  "_types/src/lib/src/managers/ChangeManager.*",
+  "src/lib/src/managers/ChunkManager.*",
+  "_types/src/lib/src/managers/ChunkManager.*",
+  "src/lib/src/managers/LayeredChunkManager/**",
+  "_types/src/lib/src/managers/LayeredChunkManager/**",
+  "src/lib/src/pouchdb/LiveSync*",
+  "_types/src/lib/src/pouchdb/LiveSync*",
+]
+local_paths = [
+  "src/obsidian_livesync_mcp/client.py",
+  "tests/test_client.py",
+]
+review_notes = [
+  "Check assumptions around chunk arrival, conflicts, retries, and replication gaps.",
+]
+
+[[areas]]
+name = "encryption-compression"
+risk = "medium"
+upstream_paths = [
+  "src/lib/src/pouchdb/encryption.*",
+  "_types/src/lib/src/pouchdb/encryption.*",
+  "src/lib/src/pouchdb/compress.*",
+  "_types/src/lib/src/pouchdb/compress.*",
+]
+local_paths = [
+  "README.md",
+  "src/obsidian_livesync_mcp/client.py",
+  "src/obsidian_livesync_mcp/config.py",
+]
+review_notes = [
+  "Check whether unsupported encrypted, obfuscated, or compressed modes changed defaults or detection behavior.",
+]
+
+[[areas]]
+name = "deletion-semantics"
+risk = "high"
+upstream_paths = [
+  "src/lib/src/managers/EntryManager/**",
+  "_types/src/lib/src/managers/EntryManager/**",
+  "src/lib/src/managers/ChunkManager.*",
+  "_types/src/lib/src/managers/ChunkManager.*",
+]
+local_paths = [
+  "src/obsidian_livesync_mcp/client.py",
+  "tests/test_client.py",
+]
+review_notes = [
+  "Check soft-delete fields, tombstone handling, hard-delete behavior, and orphan chunk safety.",
+]
