@@ -345,7 +345,7 @@ no watched files changed so Copilot is not invoked.
 
 When watched files do change, the workflow asks Copilot to create one GitHub
 issue summarizing the release, compare link, matched upstream files, and local
-files/tests to review. The workflow is capped at 10 GitHub AI Credits per run.
+files/tests to review. The workflow is capped at 15 GitHub AI Credits per run.
 GitHub Issues must be enabled for the repository before the issue safe output
 can run.
 
