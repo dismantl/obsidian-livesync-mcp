@@ -12,7 +12,6 @@ permissions:
 
 engine:
   id: copilot
-  model: gpt-5-mini
 
 network:
   allowed:
