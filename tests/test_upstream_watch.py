@@ -1,6 +1,8 @@
+import subprocess
 from pathlib import Path
 
 from obsidian_livesync_mcp.upstream_watch import (
+    GitHubClient,
     GitHubRelease,
     find_review_candidate,
     issue_marker,
@@ -117,6 +119,42 @@ def test_find_review_candidate_skips_existing_issue_marker():
     candidate = find_review_candidate(config, client, "dismantl/obsidian-livesync-mcp")
 
     assert candidate is None
+
+
+def test_github_client_compare_files_uses_git_diff(monkeypatch):
+    commands = []
+
+    def fake_run(args, cwd, check, capture_output, text, timeout):
+        assert cwd
+        assert check is True
+        assert capture_output is True
+        assert text is True
+        assert timeout == 120
+        commands.append(args)
+        if args[:2] == ["git", "diff"]:
+            return subprocess.CompletedProcess(args, 0, stdout="b.py\na.py\n")
+        if args[:2] == ["git", "rev-parse"] and args[2].endswith("base^{commit}"):
+            return subprocess.CompletedProcess(args, 0, stdout="base-sha\n")
+        if args[:2] == ["git", "rev-parse"] and args[2].endswith("head^{commit}"):
+            return subprocess.CompletedProcess(args, 0, stdout="head-sha\n")
+        return subprocess.CompletedProcess(args, 0, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client = GitHubClient(token=None, target_repo="dismantl/obsidian-livesync-mcp")
+
+    changed_files = client.compare_files("vrtmrz", "obsidian-livesync", "base", "head")
+
+    assert changed_files == ["a.py", "b.py"]
+    assert [
+        "git",
+        "fetch",
+        "--no-tags",
+        "--depth=1",
+        "origin",
+        "refs/tags/base:refs/tags/base",
+        "refs/tags/head:refs/tags/head",
+    ] in commands
+    assert ["git", "diff", "--name-only", "base-sha", "head-sha"] in commands
 
 
 def test_render_evidence_includes_marker_and_compare_url():

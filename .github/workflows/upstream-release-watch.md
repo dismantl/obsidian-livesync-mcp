@@ -41,6 +41,14 @@ runtimes:
   python:
     version: "3.12"
 
+jobs:
+  agent:
+    pre-steps:
+      - name: Set up scanner Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
 steps:
   - name: Check out repository
     uses: actions/checkout@v6

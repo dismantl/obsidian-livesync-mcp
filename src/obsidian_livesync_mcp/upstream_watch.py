@@ -6,7 +6,9 @@ import argparse
 import fnmatch
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -113,8 +115,7 @@ class GitHubClient:
         ]
 
     def compare_files(self, owner: str, repo: str, base: str, head: str) -> list[str]:
-        comparison = self._request(f"/repos/{owner}/{repo}/compare/{base}...{head}", {})
-        return sorted(file["filename"] for file in comparison.get("files", []))
+        return self._compare_files_with_git(owner, repo, base, head)
 
     def issue_exists(self, marker: str) -> bool:
         query = f'repo:{self._target_repo} is:issue "{marker}" in:body'
@@ -142,6 +143,48 @@ class GitHubClient:
             detail = exc.read().decode("utf-8", errors="replace")
             message = f"GitHub API request failed for {path}: {exc.code} {detail}"
             raise RuntimeError(message) from exc
+
+    def _compare_files_with_git(self, owner: str, repo: str, base: str, head: str) -> list[str]:
+        repo_url = f"https://github.com/{owner}/{repo}.git"
+        with tempfile.TemporaryDirectory(prefix="upstream-watch-") as tempdir:
+            self._run_git(["git", "init", "-q"], tempdir)
+            self._run_git(["git", "remote", "add", "origin", repo_url], tempdir)
+            self._run_git(
+                [
+                    "git",
+                    "fetch",
+                    "--no-tags",
+                    "--depth=1",
+                    "origin",
+                    f"refs/tags/{base}:refs/tags/{base}",
+                    f"refs/tags/{head}:refs/tags/{head}",
+                ],
+                tempdir,
+            )
+            base_commit = self._run_git(
+                ["git", "rev-parse", f"refs/tags/{base}^{{commit}}"], tempdir
+            ).strip()
+            head_commit = self._run_git(
+                ["git", "rev-parse", f"refs/tags/{head}^{{commit}}"], tempdir
+            ).strip()
+            changed = self._run_git(
+                ["git", "diff", "--name-only", base_commit, head_commit], tempdir
+            )
+            return sorted(line for line in changed.splitlines() if line)
+
+    def _run_git(self, args: list[str], cwd: str) -> str:
+        try:
+            result = subprocess.run(
+                args,
+                cwd=cwd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"Git command failed while comparing upstream tags: {args}") from exc
+        return result.stdout
 
 
 def load_config(path: Path) -> WatchConfig:
