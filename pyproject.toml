@@ -30,6 +30,7 @@ dependencies = [
     "pydantic>=2.0",
     "xxhash>=3.0",
     "starlette>=1.0.1",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.urls]
