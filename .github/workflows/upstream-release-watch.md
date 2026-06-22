@@ -59,6 +59,7 @@ steps:
     env:
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
+      GH_AW_SAFE_OUTPUTS: ${{ steps.set-runtime-paths.outputs.GH_AW_SAFE_OUTPUTS }}
     run: python src/obsidian_livesync_mcp/upstream_watch.py --output .github/upstream-release-watch-evidence.md
 ---
 
