@@ -1,0 +1,216 @@
+"""Publish validated upstream release watch issues."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+from obsidian_livesync_mcp.upstream_watch import DEFAULT_API_URL
+
+ISSUE_TITLE_PREFIX = "[upstream-watch] "
+MARKER_RE = re.compile(r"<!--\s*(upstream-release-watch:[^>]+?)\s*-->")
+
+
+@dataclass(frozen=True)
+class CopilotIssueDraft:
+    summary: str
+    compatibility_risk: str
+    review_focus: list[str]
+
+
+class IssueClient(Protocol):
+    def issue_exists(self, marker: str) -> bool: ...
+
+    def create_issue(self, title: str, body: str) -> str: ...
+
+
+class GitHubIssueClient:
+    def __init__(self, *, token: str, target_repo: str, api_url: str = DEFAULT_API_URL):
+        self._token = token
+        self._target_repo = target_repo
+        self._api_url = api_url.rstrip("/")
+
+    def issue_exists(self, marker: str) -> bool:
+        query = f'repo:{self._target_repo} is:issue "{marker}" in:body'
+        result = self._request("GET", "/search/issues", {"q": query, "per_page": "1"})
+        return int(result.get("total_count", 0)) > 0
+
+    def create_issue(self, title: str, body: str) -> str:
+        result = self._request(
+            "POST",
+            f"/repos/{self._target_repo}/issues",
+            {},
+            {"title": title, "body": body},
+        )
+        return str(result.get("html_url") or "")
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, str],
+        payload: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        query = urllib.parse.urlencode(params)
+        url = f"{self._api_url}{path}"
+        if query:
+            url = f"{url}?{query}"
+        data = None
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=data,
+            method=method,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+                "User-Agent": "obsidian-livesync-mcp-upstream-watch",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Authorization": f"Bearer {self._token}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            message = f"GitHub API request failed for {path}: {exc.code} {detail}"
+            raise RuntimeError(message) from exc
+
+
+def parse_copilot_draft(raw: str) -> CopilotIssueDraft:
+    payload = _parse_json_object(raw)
+    summary = _required_string(payload, "summary")
+    compatibility_risk = _required_string(payload, "compatibility_risk")
+    review_focus = payload.get("review_focus")
+    if not isinstance(review_focus, list) or not review_focus:
+        raise ValueError("Copilot draft field 'review_focus' must be a non-empty list")
+    focus_items = []
+    for item in review_focus:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("Copilot draft field 'review_focus' must contain non-empty strings")
+        focus_items.append(item.strip())
+    return CopilotIssueDraft(
+        summary=summary,
+        compatibility_risk=compatibility_risk,
+        review_focus=focus_items,
+    )
+
+
+def build_issue_payload(evidence: str, draft: CopilotIssueDraft) -> tuple[str, str]:
+    marker = extract_marker(evidence)
+    tag = marker.rsplit(":", 1)[-1]
+    title = f"{ISSUE_TITLE_PREFIX}LiveSync {tag}: review upstream compatibility changes"
+    evidence_without_marker = MARKER_RE.sub("", evidence, count=1).lstrip()
+    focus = "\n".join(f"- {item}" for item in draft.review_focus)
+    body = "\n".join(
+        [
+            f"<!-- {marker} -->",
+            "",
+            "## Automated Summary",
+            "",
+            draft.summary,
+            "",
+            "## Compatibility Risk",
+            "",
+            draft.compatibility_risk,
+            "",
+            "## Review Focus",
+            "",
+            focus,
+            "",
+            (
+                "This is an automated triage issue. "
+                "A human should decide whether code changes are needed."
+            ),
+            "",
+            "## Scanner Evidence",
+            "",
+            evidence_without_marker.rstrip(),
+            "",
+        ]
+    )
+    return title, body
+
+
+def publish_issue(evidence_path: Path, draft_path: Path, client: IssueClient) -> str:
+    if not evidence_path.exists() or not evidence_path.read_text().strip():
+        return "noop"
+
+    evidence = evidence_path.read_text()
+    marker = extract_marker(evidence)
+    if client.issue_exists(marker):
+        return "skipped_existing"
+
+    draft = parse_copilot_draft(draft_path.read_text())
+    title, body = build_issue_payload(evidence, draft)
+    client.create_issue(title, body)
+    return "created"
+
+
+def extract_marker(evidence: str) -> str:
+    match = MARKER_RE.search(evidence)
+    if not match:
+        raise ValueError("Evidence does not contain an upstream release watch marker")
+    return match.group(1)
+
+
+def _parse_json_object(raw: str) -> dict[str, object]:
+    stripped = raw.strip()
+    fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
+    if fence:
+        stripped = fence.group(1).strip()
+    else:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start != -1 and end != -1 and start < end:
+            stripped = stripped[start : end + 1]
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Copilot draft is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Copilot draft must be a JSON object")
+    return payload
+
+
+def _required_string(payload: dict[str, object], field: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Copilot draft field '{field}' must be a non-empty string")
+    return value.strip()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--draft", type=Path, required=True)
+    parser.add_argument("--target-repo", default=os.environ.get("GITHUB_REPOSITORY"))
+    parser.add_argument("--api-url", default=os.environ.get("GITHUB_API_URL", DEFAULT_API_URL))
+    args = parser.parse_args(argv)
+
+    if not args.target_repo:
+        raise SystemExit("--target-repo is required outside GitHub Actions")
+
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise SystemExit("GH_TOKEN or GITHUB_TOKEN is required to create GitHub issues")
+
+    client = GitHubIssueClient(token=token, target_repo=args.target_repo, api_url=args.api_url)
+    result = publish_issue(args.evidence, args.draft, client)
+    print(result)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

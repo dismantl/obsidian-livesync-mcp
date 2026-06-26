@@ -316,12 +316,6 @@ def render_evidence(config: WatchConfig, candidate: ReviewCandidate, target_repo
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_noop(path: Path, message: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as handle:
-        handle.write(json.dumps({"type": "noop", "message": message}) + "\n")
-
-
 def _truncate(value: str, max_chars: int) -> str:
     if len(value) <= max_chars:
         return value
@@ -346,10 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     candidate = find_review_candidate(config, client, args.target_repo)
 
     if candidate is None:
-        noop_path = os.environ.get("GH_AW_SAFE_OUTPUTS")
         message = "No untracked upstream release with watched compatibility changes was found."
-        if noop_path:
-            write_noop(Path(noop_path), message)
         print(message)
         return 0
 
