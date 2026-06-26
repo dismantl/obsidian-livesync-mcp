@@ -1,6 +1,8 @@
 import subprocess
 from pathlib import Path
 
+import yaml
+
 from obsidian_livesync_mcp.upstream_watch import (
     GitHubClient,
     GitHubRelease,
@@ -11,6 +13,8 @@ from obsidian_livesync_mcp.upstream_watch import (
     render_evidence,
     write_noop,
 )
+
+PINNED_COPILOT_MODEL = "claude-sonnet-4.6"
 
 
 class FakeGitHub:
@@ -59,6 +63,19 @@ review_notes = ["Check parent document shape."]
     assert config.issue.marker_prefix == "upstream-release-watch"
     assert config.areas[0].name == "storage-format"
     assert config.areas[0].local_paths == ["src/obsidian_livesync_mcp/client.py"]
+
+
+def test_upstream_release_watch_pins_supported_copilot_model():
+    workflow_text = Path(".github/workflows/upstream-release-watch.md").read_text()
+    frontmatter = workflow_text.split("---", 2)[1]
+    workflow = yaml.safe_load(frontmatter)
+
+    assert workflow["engine"] == {"id": "copilot", "model": PINNED_COPILOT_MODEL}
+
+    lockfile_text = Path(".github/workflows/upstream-release-watch.lock.yml").read_text()
+    assert f'GH_AW_INFO_MODEL: "{PINNED_COPILOT_MODEL}"' in lockfile_text
+    assert f"COPILOT_MODEL: {PINNED_COPILOT_MODEL}" in lockfile_text
+    assert "GH_AW_DEFAULT_MODEL_COPILOT" not in lockfile_text
 
 
 def test_match_changed_files_groups_by_watch_area():
