@@ -14,7 +14,7 @@ from obsidian_livesync_mcp.upstream_watch import (
     write_noop,
 )
 
-PINNED_COPILOT_MODEL = "claude-sonnet-4.6"
+COPILOT_AUTO_MODEL = "auto"
 
 
 class FakeGitHub:
@@ -65,16 +65,16 @@ review_notes = ["Check parent document shape."]
     assert config.areas[0].local_paths == ["src/obsidian_livesync_mcp/client.py"]
 
 
-def test_upstream_release_watch_pins_supported_copilot_model():
+def test_upstream_release_watch_uses_copilot_auto_model_selection():
     workflow_text = Path(".github/workflows/upstream-release-watch.md").read_text()
     frontmatter = workflow_text.split("---", 2)[1]
     workflow = yaml.safe_load(frontmatter)
 
-    assert workflow["engine"] == {"id": "copilot", "model": PINNED_COPILOT_MODEL}
+    assert workflow["engine"] == {"id": "copilot", "model": COPILOT_AUTO_MODEL}
 
     lockfile_text = Path(".github/workflows/upstream-release-watch.lock.yml").read_text()
-    assert f'GH_AW_INFO_MODEL: "{PINNED_COPILOT_MODEL}"' in lockfile_text
-    assert f"COPILOT_MODEL: {PINNED_COPILOT_MODEL}" in lockfile_text
+    assert f'GH_AW_INFO_MODEL: "{COPILOT_AUTO_MODEL}"' in lockfile_text
+    assert f"COPILOT_MODEL: {COPILOT_AUTO_MODEL}" in lockfile_text
     assert "GH_AW_DEFAULT_MODEL_COPILOT" not in lockfile_text
 
 
