@@ -82,10 +82,7 @@ def test_upstream_release_watch_uses_direct_copilot_cli_auto_model_selection():
     assert re.fullmatch(r"\d+\.\d+\.\d+", workflow["env"]["COPILOT_CLI_VERSION"])
     assert "gh-aw" not in workflow_text
     assert 'npm install -g "@github/copilot@${COPILOT_CLI_VERSION}"' in workflow_text
-    assert (
-        "python src/obsidian_livesync_mcp/upstream_watch.py \\\n"
-        in collect_step["run"]
-    )
+    assert "python src/obsidian_livesync_mcp/upstream_watch.py \\\n" in collect_step["run"]
     assert f"--model {COPILOT_AUTO_MODEL}" in workflow_text
     assert "COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}" in workflow_text
     assert "GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}" in workflow_text
