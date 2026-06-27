@@ -33,6 +33,7 @@ class FakeIssueClient:
     def __init__(self, *, existing=False):
         self.existing = existing
         self.created = []
+        self.closed = []
 
     def issue_exists(self, marker):
         assert marker == "upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77"
@@ -40,6 +41,10 @@ class FakeIssueClient:
 
     def create_issue(self, title, body):
         self.created.append({"title": title, "body": body})
+        return "https://github.com/dismantl/obsidian-livesync-mcp/issues/1"
+
+    def create_closed_issue(self, title, body):
+        self.closed.append({"title": title, "body": body})
         return "https://github.com/dismantl/obsidian-livesync-mcp/issues/1"
 
 
@@ -204,7 +209,9 @@ def test_publish_issue_deduplicates_existing_marker(tmp_path):
     assert client.created == []
 
 
-def test_publish_issue_skips_when_copilot_finds_no_local_review_needed(tmp_path):
+def test_publish_issue_creates_closed_marker_when_copilot_finds_no_local_review_needed(
+    tmp_path,
+):
     evidence_path = tmp_path / "evidence.md"
     evidence_path.write_text(SAMPLE_EVIDENCE)
     decision_path = tmp_path / "decision.json"
@@ -219,8 +226,18 @@ def test_publish_issue_skips_when_copilot_finds_no_local_review_needed(tmp_path)
 
     result = publish_issue(evidence_path, decision_path, client)
 
-    assert result == "skipped_not_needed"
+    assert result == "created_no_review_marker"
     assert client.created == []
+    assert len(client.closed) == 1
+    closed = client.closed[0]
+    assert (
+        closed["title"] == "[upstream-watch] LiveSync 0.25.77: no local compatibility review needed"
+    )
+    assert closed["body"].startswith(
+        "<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77 -->"
+    )
+    assert "## Compatibility Decision\n\nThe upstream change only touched docs." in closed["body"]
+    assert "does not require local compatibility review" in closed["body"]
 
 
 def test_publish_issue_creates_validated_issue(tmp_path):

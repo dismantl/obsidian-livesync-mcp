@@ -38,6 +38,8 @@ class IssueClient(Protocol):
 
     def create_issue(self, title: str, body: str) -> str: ...
 
+    def create_closed_issue(self, title: str, body: str) -> str: ...
+
 
 class GitHubIssueClient:
     def __init__(self, *, token: str, target_repo: str, api_url: str = DEFAULT_API_URL):
@@ -51,13 +53,30 @@ class GitHubIssueClient:
         return int(result.get("total_count", 0)) > 0
 
     def create_issue(self, title: str, body: str) -> str:
+        result = self._create_issue(title, body)
+        return str(result.get("html_url") or "")
+
+    def create_closed_issue(self, title: str, body: str) -> str:
+        result = self._create_issue(title, body)
+        number = result.get("number")
+        if not isinstance(number, int):
+            raise RuntimeError("GitHub issue creation did not return an issue number")
+        self._request(
+            "PATCH",
+            f"/repos/{self._target_repo}/issues/{number}",
+            {},
+            {"state": "closed", "state_reason": "not_planned"},
+        )
+        return str(result.get("html_url") or "")
+
+    def _create_issue(self, title: str, body: str) -> dict[str, object]:
         result = self._request(
             "POST",
             f"/repos/{self._target_repo}/issues",
             {},
             {"title": title, "body": body},
         )
-        return str(result.get("html_url") or "")
+        return result
 
     def _request(
         self,
@@ -138,11 +157,8 @@ def parse_copilot_decision(raw: str) -> CopilotCompatibilityDecision:
 
 
 def build_issue_payload(evidence: str, decision: CopilotCompatibilityDecision) -> tuple[str, str]:
-    marker = extract_marker(evidence)
-    tag = marker.rsplit(":", 1)[-1]
+    marker, tag, safe_evidence = _issue_context(evidence)
     title = f"{ISSUE_TITLE_PREFIX}LiveSync {tag}: review upstream compatibility changes"
-    evidence_without_marker = MARKER_RE.sub("", evidence, count=1).lstrip()
-    safe_evidence = _redact_embedded_markers(evidence_without_marker)
     safe_decision_reason = _redact_embedded_markers(decision.decision_reason)
     safe_summary = _redact_embedded_markers(decision.summary)
     safe_compatibility_risk = _redact_embedded_markers(decision.compatibility_risk)
@@ -182,6 +198,43 @@ def build_issue_payload(evidence: str, decision: CopilotCompatibilityDecision) -
     return title, body
 
 
+def build_no_review_payload(
+    evidence: str, decision: CopilotCompatibilityDecision
+) -> tuple[str, str]:
+    marker, tag, safe_evidence = _issue_context(evidence)
+    title = f"{ISSUE_TITLE_PREFIX}LiveSync {tag}: no local compatibility review needed"
+    safe_decision_reason = _redact_embedded_markers(decision.decision_reason)
+    body = "\n".join(
+        [
+            f"<!-- {marker} -->",
+            "",
+            "## Compatibility Decision",
+            "",
+            safe_decision_reason,
+            "",
+            (
+                "Copilot determined that this upstream release does not require "
+                "local compatibility review. This closed issue records the decision "
+                "so the scheduled watcher does not reprocess the same release."
+            ),
+            "",
+            "## Scanner Evidence",
+            "",
+            safe_evidence.rstrip(),
+            "",
+        ]
+    )
+    return title, body
+
+
+def _issue_context(evidence: str) -> tuple[str, str, str]:
+    marker = extract_marker(evidence)
+    tag = marker.rsplit(":", 1)[-1]
+    evidence_without_marker = MARKER_RE.sub("", evidence, count=1).lstrip()
+    safe_evidence = _redact_embedded_markers(evidence_without_marker)
+    return marker, tag, safe_evidence
+
+
 def _redact_embedded_markers(value: str) -> str:
     without_comment_markers = MARKER_RE.sub(EMBEDDED_MARKER_REDACTION, value)
     return MARKER_TOKEN_RE.sub(EMBEDDED_MARKER_REDACTION, without_comment_markers)
@@ -198,7 +251,9 @@ def publish_issue(evidence_path: Path, decision_path: Path, client: IssueClient)
 
     decision = parse_copilot_decision(decision_path.read_text())
     if not decision.needs_local_review:
-        return "skipped_not_needed"
+        title, body = build_no_review_payload(evidence, decision)
+        client.create_closed_issue(title, body)
+        return "created_no_review_marker"
 
     title, body = build_issue_payload(evidence, decision)
     client.create_issue(title, body)
