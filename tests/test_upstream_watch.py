@@ -1,3 +1,4 @@
+import re
 import subprocess
 from pathlib import Path
 
@@ -73,10 +74,18 @@ def test_upstream_release_watch_uses_direct_copilot_cli_auto_model_selection():
     assert not Path(".github/workflows/upstream-release-watch.lock.yml").exists()
     assert ".github/aw/actions-lock.json" not in {str(path) for path in Path(".github").rglob("*")}
     assert workflow["permissions"] == {"contents": "read", "issues": "write"}
+    assert re.fullmatch(r"\d+\.\d+\.\d+", workflow["env"]["COPILOT_CLI_VERSION"])
     assert "gh-aw" not in workflow_text
-    assert "npm install -g @github/copilot" in workflow_text
+    assert 'npm install -g "@github/copilot@${COPILOT_CLI_VERSION}"' in workflow_text
     assert f"--model {COPILOT_AUTO_MODEL}" in workflow_text
     assert "COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}" in workflow_text
+    assert "GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}" in workflow_text
+    assert '--evidence "$RUNNER_TEMP/upstream-release-watch-evidence.md"' in workflow_text
+    assert ".github/upstream-release-watch-evidence.md" not in workflow_text
+    assert '-C "$RUNNER_TEMP/copilot-work"' in workflow_text
+    assert "--disable-builtin-mcps" in workflow_text
+    assert '--available-tools ""' in workflow_text
+    assert "git status --porcelain --untracked-files=all" in workflow_text
     assert "python -m obsidian_livesync_mcp.upstream_watch_issue" in workflow_text
 
 
