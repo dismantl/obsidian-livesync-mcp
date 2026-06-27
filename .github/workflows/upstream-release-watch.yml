@@ -37,7 +37,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python src/obsidian_livesync_mcp/upstream_watch.py
+          python src/obsidian_livesync_mcp/upstream_watch.py \
             --output "$RUNNER_TEMP/upstream-release-watch-evidence.md"
 
       - name: Check whether Copilot is needed
