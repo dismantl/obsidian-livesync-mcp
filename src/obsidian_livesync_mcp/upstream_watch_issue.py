@@ -18,6 +18,9 @@ from obsidian_livesync_mcp.upstream_watch import DEFAULT_API_URL
 
 ISSUE_TITLE_PREFIX = "[upstream-watch] "
 MARKER_RE = re.compile(r"<!--\s*(upstream-release-watch:[^>]+?)\s*-->")
+MARKER_TOKEN_RE = re.compile(
+    r"upstream-release-watch:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:[^\s<>)\]}\"']+"
+)
 EMBEDDED_MARKER_REDACTION = "<!-- redacted upstream release watch marker -->"
 
 
@@ -113,19 +116,22 @@ def build_issue_payload(evidence: str, draft: CopilotIssueDraft) -> tuple[str, s
     tag = marker.rsplit(":", 1)[-1]
     title = f"{ISSUE_TITLE_PREFIX}LiveSync {tag}: review upstream compatibility changes"
     evidence_without_marker = MARKER_RE.sub("", evidence, count=1).lstrip()
-    safe_evidence = MARKER_RE.sub(EMBEDDED_MARKER_REDACTION, evidence_without_marker)
-    focus = "\n".join(f"- {item}" for item in draft.review_focus)
+    safe_evidence = _redact_embedded_markers(evidence_without_marker)
+    safe_summary = _redact_embedded_markers(draft.summary)
+    safe_compatibility_risk = _redact_embedded_markers(draft.compatibility_risk)
+    safe_review_focus = [_redact_embedded_markers(item) for item in draft.review_focus]
+    focus = "\n".join(f"- {item}" for item in safe_review_focus)
     body = "\n".join(
         [
             f"<!-- {marker} -->",
             "",
             "## Automated Summary",
             "",
-            draft.summary,
+            safe_summary,
             "",
             "## Compatibility Risk",
             "",
-            draft.compatibility_risk,
+            safe_compatibility_risk,
             "",
             "## Review Focus",
             "",
@@ -143,6 +149,11 @@ def build_issue_payload(evidence: str, draft: CopilotIssueDraft) -> tuple[str, s
         ]
     )
     return title, body
+
+
+def _redact_embedded_markers(value: str) -> str:
+    without_comment_markers = MARKER_RE.sub(EMBEDDED_MARKER_REDACTION, value)
+    return MARKER_TOKEN_RE.sub(EMBEDDED_MARKER_REDACTION, without_comment_markers)
 
 
 def publish_issue(evidence_path: Path, draft_path: Path, client: IssueClient) -> str:

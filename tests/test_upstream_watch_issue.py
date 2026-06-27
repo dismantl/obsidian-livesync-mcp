@@ -107,6 +107,26 @@ def test_build_issue_payload_redacts_embedded_markers_from_scanner_evidence():
     assert "<!-- redacted upstream release watch marker -->" in body
 
 
+def test_build_issue_payload_redacts_markers_from_copilot_draft():
+    draft = CopilotIssueDraft(
+        summary=("Chunking changed. upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.78"),
+        compatibility_risk=(
+            "<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.79 -->"
+        ),
+        review_focus=[
+            "Review upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.80",
+        ],
+    )
+
+    _, body = build_issue_payload(SAMPLE_EVIDENCE, draft)
+
+    assert body.count("upstream-release-watch:dismantl/obsidian-livesync-mcp:") == 1
+    assert body.startswith("<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77 -->")
+    assert body.count("<!-- redacted upstream release watch marker -->") == 3
+    assert "Chunking changed." in body
+    assert "- Review <!-- redacted upstream release watch marker -->" in body
+
+
 def test_publish_issue_skips_missing_evidence(tmp_path):
     draft_path = tmp_path / "draft.json"
     draft_path.write_text(
