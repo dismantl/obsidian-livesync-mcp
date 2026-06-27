@@ -88,6 +88,25 @@ def test_build_issue_payload_preserves_marker_and_scanner_evidence():
     assert "https://github.com/vrtmrz/obsidian-livesync/compare/0.25.76...0.25.77" in body
 
 
+def test_build_issue_payload_redacts_embedded_markers_from_scanner_evidence():
+    draft = CopilotIssueDraft(
+        summary="Chunking code changed upstream.",
+        compatibility_risk="The local Rabin-Karp splitter may need updates.",
+        review_focus=["Inspect chunk boundaries."],
+    )
+    evidence = (
+        SAMPLE_EVIDENCE
+        + "\n## Upstream Release Notes\n\n"
+        + "<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.78 -->\n"
+    )
+
+    _, body = build_issue_payload(evidence, draft)
+
+    assert body.count("upstream-release-watch:dismantl/obsidian-livesync-mcp:") == 1
+    assert body.startswith("<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77 -->")
+    assert "<!-- redacted upstream release watch marker -->" in body
+
+
 def test_publish_issue_skips_missing_evidence(tmp_path):
     draft_path = tmp_path / "draft.json"
     draft_path.write_text(

@@ -18,6 +18,7 @@ from obsidian_livesync_mcp.upstream_watch import DEFAULT_API_URL
 
 ISSUE_TITLE_PREFIX = "[upstream-watch] "
 MARKER_RE = re.compile(r"<!--\s*(upstream-release-watch:[^>]+?)\s*-->")
+EMBEDDED_MARKER_REDACTION = "<!-- redacted upstream release watch marker -->"
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,7 @@ def build_issue_payload(evidence: str, draft: CopilotIssueDraft) -> tuple[str, s
     tag = marker.rsplit(":", 1)[-1]
     title = f"{ISSUE_TITLE_PREFIX}LiveSync {tag}: review upstream compatibility changes"
     evidence_without_marker = MARKER_RE.sub("", evidence, count=1).lstrip()
+    safe_evidence = MARKER_RE.sub(EMBEDDED_MARKER_REDACTION, evidence_without_marker)
     focus = "\n".join(f"- {item}" for item in draft.review_focus)
     body = "\n".join(
         [
@@ -136,7 +138,7 @@ def build_issue_payload(evidence: str, draft: CopilotIssueDraft) -> tuple[str, s
             "",
             "## Scanner Evidence",
             "",
-            evidence_without_marker.rstrip(),
+            safe_evidence.rstrip(),
             "",
         ]
     )
