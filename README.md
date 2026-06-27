@@ -335,26 +335,6 @@ These settings can be any value — reads always work, writes use LiveSync defau
 | Data compression (`enableCompression`) | Chunk data appears garbled |
 | Chunk packs (`chunkpack` type) | Packed chunks are not fetched |
 
-## Upstream Release Watch
-
-The repository includes an Agentic Workflow that checks recent
-`vrtmrz/obsidian-livesync` releases for changes in watched compatibility areas.
-The deterministic scanner reads `.github/upstream-release-watch.toml`, skips
-releases that already have a marker issue, and writes a `noop` safe output when
-no watched files changed so Copilot is not invoked.
-
-When watched files do change, the workflow asks Copilot to create one GitHub
-issue summarizing the release, compare link, matched upstream files, and local
-files/tests to review. The workflow is capped at 15 GitHub AI Credits per run.
-GitHub Issues must be enabled for the repository before the issue safe output
-can run.
-
-For personal repositories, configure the `COPILOT_GITHUB_TOKEN` Actions secret
-with a fine-grained GitHub PAT whose owner has Copilot access and the Copilot
-Requests permission. Organization repositories can instead switch the workflow
-to `permissions: copilot-requests: write` if centralized Copilot billing is
-enabled.
-
 ## License
 
 MIT

@@ -1,3 +1,4 @@
+import re
 import subprocess
 from pathlib import Path
 
@@ -11,7 +12,6 @@ from obsidian_livesync_mcp.upstream_watch import (
     load_config,
     match_changed_files,
     render_evidence,
-    write_noop,
 )
 
 COPILOT_AUTO_MODEL = "auto"
@@ -65,17 +65,38 @@ review_notes = ["Check parent document shape."]
     assert config.areas[0].local_paths == ["src/obsidian_livesync_mcp/client.py"]
 
 
-def test_upstream_release_watch_uses_copilot_auto_model_selection():
-    workflow_text = Path(".github/workflows/upstream-release-watch.md").read_text()
-    frontmatter = workflow_text.split("---", 2)[1]
-    workflow = yaml.safe_load(frontmatter)
+def test_upstream_release_watch_uses_direct_copilot_cli_auto_model_selection():
+    workflow_path = Path(".github/workflows/upstream-release-watch.yml")
+    workflow_text = workflow_path.read_text()
+    workflow = yaml.safe_load(workflow_text)
+    collect_step = next(
+        step
+        for step in workflow["jobs"]["watch"]["steps"]
+        if step["name"] == "Collect upstream release evidence"
+    )
 
-    assert workflow["engine"] == {"id": "copilot", "model": COPILOT_AUTO_MODEL}
-
-    lockfile_text = Path(".github/workflows/upstream-release-watch.lock.yml").read_text()
-    assert f'GH_AW_INFO_MODEL: "{COPILOT_AUTO_MODEL}"' in lockfile_text
-    assert f"COPILOT_MODEL: {COPILOT_AUTO_MODEL}" in lockfile_text
-    assert "GH_AW_DEFAULT_MODEL_COPILOT" not in lockfile_text
+    assert not Path(".github/workflows/upstream-release-watch.md").exists()
+    assert not Path(".github/workflows/upstream-release-watch.lock.yml").exists()
+    assert ".github/aw/actions-lock.json" not in {str(path) for path in Path(".github").rglob("*")}
+    assert workflow["permissions"] == {"contents": "read", "issues": "write"}
+    assert re.fullmatch(r"\d+\.\d+\.\d+", workflow["env"]["COPILOT_CLI_VERSION"])
+    assert "gh-aw" not in workflow_text
+    assert 'npm install -g "@github/copilot@${COPILOT_CLI_VERSION}"' in workflow_text
+    assert "python src/obsidian_livesync_mcp/upstream_watch.py \\\n" in collect_step["run"]
+    assert f"--model {COPILOT_AUTO_MODEL}" in workflow_text
+    assert "COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}" in workflow_text
+    assert "GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}" in workflow_text
+    assert '--evidence "$RUNNER_TEMP/upstream-release-watch-evidence.md"' in workflow_text
+    assert '--decision "$RUNNER_TEMP/upstream-release-watch-decision.json"' in workflow_text
+    assert "upstream-release-watch-draft.json" not in workflow_text
+    assert "needs_local_review" in workflow_text
+    assert "whether deterministic upstream release evidence warrants" in workflow_text
+    assert ".github/upstream-release-watch-evidence.md" not in workflow_text
+    assert '-C "$RUNNER_TEMP/copilot-work"' in workflow_text
+    assert "--disable-builtin-mcps" in workflow_text
+    assert '--available-tools ""' in workflow_text
+    assert "git status --porcelain --untracked-files=all" in workflow_text
+    assert "python -m obsidian_livesync_mcp.upstream_watch_issue" in workflow_text
 
 
 def test_match_changed_files_groups_by_watch_area():
@@ -198,13 +219,3 @@ def test_render_evidence_includes_marker_and_compare_url():
     assert "https://github.com/vrtmrz/obsidian-livesync/compare/0.25.76...0.25.77" in evidence
     assert "chunking-and-hashing" in evidence
     assert "src/obsidian_livesync_mcp/chunking.py" in evidence
-
-
-def test_write_noop_appends_safe_output_json(tmp_path):
-    output_path = tmp_path / "safe-output.jsonl"
-
-    write_noop(output_path, "No watched upstream files changed.")
-
-    assert output_path.read_text() == (
-        '{"type": "noop", "message": "No watched upstream files changed."}\n'
-    )
