@@ -74,17 +74,34 @@ jobs:
           {
             "needs_local_review": true,
             "decision_reason": "One short paragraph explaining why the upstream changes may require local changes, or why they do not.",
-            "summary": "One short paragraph summarizing the upstream compatibility change.",
-            "compatibility_risk": "One short paragraph explaining the likely local risk.",
-            "review_focus": ["Two to five concrete review steps for a human maintainer."]
+            "issue_body_markdown": "Markdown for the GitHub issue body when needs_local_review is true, otherwise an empty string."
           }
 
           Set "needs_local_review" to true only when the evidence indicates that the
           upstream changes could plausibly require code, test, documentation, or
           compatibility-behavior changes in this repository. Set it to false when
           the watched file changes appear irrelevant to this repository's compatibility
-          assumptions, and then use empty strings for summary and compatibility_risk
-          and an empty review_focus array.
+          assumptions, and then use an empty string for issue_body_markdown.
+
+          When needs_local_review is true, write issue_body_markdown as a
+          human-friendly triage report for a maintainer. Do not paste the raw evidence
+          wholesale; synthesize it into these sections:
+
+          ## Upstream Release
+          Include repository, release link, compared range, and compare URL.
+
+          ## Upstream Release Notes
+          Condense the release notes into the points relevant to local compatibility.
+
+          ## Watched Areas That Changed
+          Group the changed watched areas by risk, explain why each matters, and list
+          the local files to inspect.
+
+          ## Compatibility Assessment
+          Explain likely compatibility impacts and uncertainty in plain language.
+
+          ## Next Steps
+          Provide a short numbered list of concrete maintainer actions.
 
           Evidence:
           PROMPT

@@ -44,9 +44,7 @@ EMBEDDED_MARKER_REDACTION = "<!-- redacted upstream release watch marker -->"
 class CopilotCompatibilityDecision:
     needs_local_review: bool
     decision_reason: str
-    summary: str
-    compatibility_risk: str
-    review_focus: list[str]
+    issue_body_markdown: str
 
 
 class IssueClient(Protocol):
@@ -169,81 +167,43 @@ def parse_copilot_decision(raw: str) -> CopilotCompatibilityDecision:
     payload = _parse_json_object(raw)
     needs_local_review = _required_bool(payload, "needs_local_review")
     decision_reason = _required_string(payload, "decision_reason")
-
-    summary = _optional_string(payload, "summary")
-    compatibility_risk = _optional_string(payload, "compatibility_risk")
-    raw_review_focus = payload.get("review_focus")
-    if raw_review_focus is None:
-        raw_review_focus = []
-    if not isinstance(raw_review_focus, list):
-        raise ValueError("Copilot decision field 'review_focus' must be a list")
-    focus_items = []
-    for item in raw_review_focus:
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError("Copilot decision field 'review_focus' must contain non-empty strings")
-        focus_items.append(item.strip())
+    issue_body_markdown = _optional_string(payload, "issue_body_markdown")
 
     if needs_local_review:
-        if not summary:
+        if not issue_body_markdown:
             raise ValueError(
-                "Copilot decision field 'summary' is required when local review is needed"
-            )
-        if not compatibility_risk:
-            raise ValueError(
-                "Copilot decision field 'compatibility_risk' is required "
-                "when local review is needed"
-            )
-        if not focus_items:
-            raise ValueError(
-                "Copilot decision field 'review_focus' must be non-empty "
+                "Copilot decision field 'issue_body_markdown' must be non-empty "
                 "when local review is needed"
             )
 
     return CopilotCompatibilityDecision(
         needs_local_review=needs_local_review,
         decision_reason=decision_reason,
-        summary=summary,
-        compatibility_risk=compatibility_risk,
-        review_focus=focus_items,
+        issue_body_markdown=issue_body_markdown,
     )
 
 
 def build_issue_payload(evidence: str, decision: CopilotCompatibilityDecision) -> tuple[str, str]:
     marker, tag, safe_evidence = _issue_context(evidence)
     title = f"{ISSUE_TITLE_PREFIX}LiveSync {tag}: review upstream compatibility changes"
-    safe_decision_reason = _redact_embedded_markers(decision.decision_reason)
-    safe_summary = _redact_embedded_markers(decision.summary)
-    safe_compatibility_risk = _redact_embedded_markers(decision.compatibility_risk)
-    safe_review_focus = [_redact_embedded_markers(item) for item in decision.review_focus]
-    focus = "\n".join(f"- {item}" for item in safe_review_focus)
+    safe_issue_body = _redact_embedded_markers(decision.issue_body_markdown).rstrip()
     body = "\n".join(
         [
             f"<!-- {marker} -->",
             "",
-            "## Compatibility Decision",
-            "",
-            safe_decision_reason,
-            "",
-            "## Automated Summary",
-            "",
-            safe_summary,
-            "",
-            "## Compatibility Risk",
-            "",
-            safe_compatibility_risk,
-            "",
-            "## Review Focus",
-            "",
-            focus,
+            safe_issue_body,
             "",
             (
                 "This is an automated triage issue. "
                 "A human should decide whether code changes are needed."
             ),
             "",
-            "## Scanner Evidence",
+            "<details>",
+            "<summary>Scanner evidence</summary>",
             "",
             safe_evidence.rstrip(),
+            "",
+            "</details>",
             "",
         ]
     )

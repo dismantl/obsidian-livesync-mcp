@@ -90,7 +90,11 @@ def test_upstream_release_watch_uses_direct_copilot_cli_auto_model_selection():
     assert '--decision "$RUNNER_TEMP/upstream-release-watch-decision.json"' in workflow_text
     assert "upstream-release-watch-draft.json" not in workflow_text
     assert "needs_local_review" in workflow_text
+    assert "issue_body_markdown" in workflow_text
     assert "whether deterministic upstream release evidence warrants" in workflow_text
+    assert "summary" not in workflow_text
+    assert "compatibility_risk" not in workflow_text
+    assert "review_focus" not in workflow_text
     assert ".github/upstream-release-watch-evidence.md" not in workflow_text
     assert '-C "$RUNNER_TEMP/copilot-work"' in workflow_text
     assert "--disable-builtin-mcps" in workflow_text
