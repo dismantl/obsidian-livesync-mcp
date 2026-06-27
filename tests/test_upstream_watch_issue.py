@@ -33,7 +33,7 @@ class FakeIssueClient:
     def __init__(self, *, existing=False):
         self.existing = existing
         self.created = []
-        self.closed = []
+        self.tracker_entries = []
 
     def issue_exists(self, marker):
         assert marker == "upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77"
@@ -43,8 +43,8 @@ class FakeIssueClient:
         self.created.append({"title": title, "body": body})
         return "https://github.com/dismantl/obsidian-livesync-mcp/issues/1"
 
-    def create_closed_issue(self, title, body):
-        self.closed.append({"title": title, "body": body})
+    def record_no_review_decision(self, body):
+        self.tracker_entries.append(body)
         return "https://github.com/dismantl/obsidian-livesync-mcp/issues/1"
 
 
@@ -209,7 +209,7 @@ def test_publish_issue_deduplicates_existing_marker(tmp_path):
     assert client.created == []
 
 
-def test_publish_issue_creates_closed_marker_when_copilot_finds_no_local_review_needed(
+def test_publish_issue_records_tracker_marker_when_copilot_finds_no_local_review_needed(
     tmp_path,
 ):
     evidence_path = tmp_path / "evidence.md"
@@ -226,18 +226,16 @@ def test_publish_issue_creates_closed_marker_when_copilot_finds_no_local_review_
 
     result = publish_issue(evidence_path, decision_path, client)
 
-    assert result == "created_no_review_marker"
+    assert result == "recorded_no_review_marker"
     assert client.created == []
-    assert len(client.closed) == 1
-    closed = client.closed[0]
-    assert (
-        closed["title"] == "[upstream-watch] LiveSync 0.25.77: no local compatibility review needed"
-    )
-    assert closed["body"].startswith(
+    assert len(client.tracker_entries) == 1
+    entry = client.tracker_entries[0]
+    assert entry.startswith(
         "<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77 -->"
     )
-    assert "## Compatibility Decision\n\nThe upstream change only touched docs." in closed["body"]
-    assert "does not require local compatibility review" in closed["body"]
+    assert "## LiveSync 0.25.77: no local compatibility review needed" in entry
+    assert "### Compatibility Decision\n\nThe upstream change only touched docs." in entry
+    assert "does not require local compatibility review" in entry
 
 
 def test_publish_issue_creates_validated_issue(tmp_path):

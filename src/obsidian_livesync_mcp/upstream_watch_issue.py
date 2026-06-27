@@ -17,6 +17,22 @@ from typing import Protocol
 from obsidian_livesync_mcp.upstream_watch import DEFAULT_API_URL
 
 ISSUE_TITLE_PREFIX = "[upstream-watch] "
+TRACKER_ISSUE_TITLE = f"{ISSUE_TITLE_PREFIX}processed upstream release state"
+TRACKER_ISSUE_HEADER = "\n".join(
+    [
+        "# Upstream Release Watch State",
+        "",
+        (
+            "This closed issue records upstream releases that Copilot evaluated "
+            "and decided do not require local compatibility review."
+        ),
+        "",
+        (
+            "The hidden markers in this body are used by the scheduled watcher "
+            "to avoid reprocessing the same release."
+        ),
+    ]
+)
 MARKER_RE = re.compile(r"<!--\s*(upstream-release-watch:[^>]+?)\s*-->")
 MARKER_TOKEN_RE = re.compile(
     r"upstream-release-watch:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:[^\s<>)\]}\"']+"
@@ -38,7 +54,7 @@ class IssueClient(Protocol):
 
     def create_issue(self, title: str, body: str) -> str: ...
 
-    def create_closed_issue(self, title: str, body: str) -> str: ...
+    def record_no_review_decision(self, body: str) -> str: ...
 
 
 class GitHubIssueClient:
@@ -56,16 +72,29 @@ class GitHubIssueClient:
         result = self._create_issue(title, body)
         return str(result.get("html_url") or "")
 
-    def create_closed_issue(self, title: str, body: str) -> str:
-        result = self._create_issue(title, body)
-        number = result.get("number")
+    def record_no_review_decision(self, body: str) -> str:
+        tracker = self._find_issue_by_title(TRACKER_ISSUE_TITLE)
+        if tracker is None:
+            result = self._create_issue(TRACKER_ISSUE_TITLE, f"{TRACKER_ISSUE_HEADER}\n\n{body}")
+            number = result.get("number")
+            if not isinstance(number, int):
+                raise RuntimeError("GitHub issue creation did not return an issue number")
+            self._close_issue(number)
+            return str(result.get("html_url") or "")
+
+        current_body = str(tracker.get("body") or "")
+        if body.strip() in current_body:
+            return str(tracker.get("html_url") or "")
+
+        number = tracker.get("number")
         if not isinstance(number, int):
-            raise RuntimeError("GitHub issue creation did not return an issue number")
-        self._request(
+            raise RuntimeError("GitHub tracker issue lookup did not return an issue number")
+        updated_body = f"{current_body.rstrip()}\n\n{body}"
+        result = self._request(
             "PATCH",
             f"/repos/{self._target_repo}/issues/{number}",
             {},
-            {"state": "closed", "state_reason": "not_planned"},
+            {"body": updated_body},
         )
         return str(result.get("html_url") or "")
 
@@ -77,6 +106,29 @@ class GitHubIssueClient:
             {"title": title, "body": body},
         )
         return result
+
+    def _close_issue(self, number: int) -> None:
+        self._request(
+            "PATCH",
+            f"/repos/{self._target_repo}/issues/{number}",
+            {},
+            {"state": "closed", "state_reason": "not_planned"},
+        )
+
+    def _find_issue_by_title(self, title: str) -> dict[str, object] | None:
+        query = f'repo:{self._target_repo} is:issue in:title "{title}"'
+        result = self._request("GET", "/search/issues", {"q": query, "per_page": "10"})
+        items = result.get("items")
+        if not isinstance(items, list):
+            return None
+        for item in items:
+            if not isinstance(item, dict) or item.get("title") != title:
+                continue
+            number = item.get("number")
+            if not isinstance(number, int):
+                continue
+            return self._request("GET", f"/repos/{self._target_repo}/issues/{number}", {})
+        return None
 
     def _request(
         self,
@@ -198,33 +250,30 @@ def build_issue_payload(evidence: str, decision: CopilotCompatibilityDecision) -
     return title, body
 
 
-def build_no_review_payload(
-    evidence: str, decision: CopilotCompatibilityDecision
-) -> tuple[str, str]:
+def build_no_review_tracker_entry(evidence: str, decision: CopilotCompatibilityDecision) -> str:
     marker, tag, safe_evidence = _issue_context(evidence)
-    title = f"{ISSUE_TITLE_PREFIX}LiveSync {tag}: no local compatibility review needed"
     safe_decision_reason = _redact_embedded_markers(decision.decision_reason)
-    body = "\n".join(
+    return "\n".join(
         [
             f"<!-- {marker} -->",
             "",
-            "## Compatibility Decision",
+            f"## LiveSync {tag}: no local compatibility review needed",
+            "",
+            "### Compatibility Decision",
             "",
             safe_decision_reason,
             "",
             (
                 "Copilot determined that this upstream release does not require "
-                "local compatibility review. This closed issue records the decision "
-                "so the scheduled watcher does not reprocess the same release."
+                "local compatibility review."
             ),
             "",
-            "## Scanner Evidence",
+            "### Scanner Evidence",
             "",
             safe_evidence.rstrip(),
             "",
         ]
     )
-    return title, body
 
 
 def _issue_context(evidence: str) -> tuple[str, str, str]:
@@ -251,9 +300,9 @@ def publish_issue(evidence_path: Path, decision_path: Path, client: IssueClient)
 
     decision = parse_copilot_decision(decision_path.read_text())
     if not decision.needs_local_review:
-        title, body = build_no_review_payload(evidence, decision)
-        client.create_closed_issue(title, body)
-        return "created_no_review_marker"
+        body = build_no_review_tracker_entry(evidence, decision)
+        client.record_no_review_decision(body)
+        return "recorded_no_review_marker"
 
     title, body = build_issue_payload(evidence, decision)
     client.create_issue(title, body)
