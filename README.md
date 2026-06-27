@@ -335,26 +335,6 @@ These settings can be any value — reads always work, writes use LiveSync defau
 | Data compression (`enableCompression`) | Chunk data appears garbled |
 | Chunk packs (`chunkpack` type) | Packed chunks are not fetched |
 
-## Upstream Release Watch
-
-The repository includes a scheduled GitHub Actions workflow that checks recent
-`vrtmrz/obsidian-livesync` releases for changes in watched compatibility areas.
-The deterministic scanner reads `.github/upstream-release-watch.toml`, skips
-releases that already have a marker issue, and stops before invoking Copilot
-when no watched files changed.
-
-When watched files do change, the workflow invokes a pinned Copilot CLI with
-auto model selection in a temporary no-tool workspace to draft a short issue
-summary. The local publisher validates the JSON draft, preserves the scanner
-marker, rechecks issue deduplication, and creates one GitHub issue with the
-release, compare link, matched upstream files, and local files/tests to review.
-GitHub Issues must be enabled for the repository before the publisher can create
-the issue.
-
-For personal repositories, configure the `COPILOT_GITHUB_TOKEN` Actions secret
-with a fine-grained GitHub PAT whose owner has Copilot access and the Copilot
-Requests permission.
-
 ## License
 
 MIT
