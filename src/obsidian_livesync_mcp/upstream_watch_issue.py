@@ -25,7 +25,9 @@ EMBEDDED_MARKER_REDACTION = "<!-- redacted upstream release watch marker -->"
 
 
 @dataclass(frozen=True)
-class CopilotIssueDraft:
+class CopilotCompatibilityDecision:
+    needs_local_review: bool
+    decision_reason: str
     summary: str
     compatibility_risk: str
     review_focus: list[str]
@@ -92,38 +94,67 @@ class GitHubIssueClient:
             raise RuntimeError(message) from exc
 
 
-def parse_copilot_draft(raw: str) -> CopilotIssueDraft:
+def parse_copilot_decision(raw: str) -> CopilotCompatibilityDecision:
     payload = _parse_json_object(raw)
-    summary = _required_string(payload, "summary")
-    compatibility_risk = _required_string(payload, "compatibility_risk")
-    review_focus = payload.get("review_focus")
-    if not isinstance(review_focus, list) or not review_focus:
-        raise ValueError("Copilot draft field 'review_focus' must be a non-empty list")
+    needs_local_review = _required_bool(payload, "needs_local_review")
+    decision_reason = _required_string(payload, "decision_reason")
+
+    summary = _optional_string(payload, "summary")
+    compatibility_risk = _optional_string(payload, "compatibility_risk")
+    raw_review_focus = payload.get("review_focus")
+    if raw_review_focus is None:
+        raw_review_focus = []
+    if not isinstance(raw_review_focus, list):
+        raise ValueError("Copilot decision field 'review_focus' must be a list")
     focus_items = []
-    for item in review_focus:
+    for item in raw_review_focus:
         if not isinstance(item, str) or not item.strip():
-            raise ValueError("Copilot draft field 'review_focus' must contain non-empty strings")
+            raise ValueError("Copilot decision field 'review_focus' must contain non-empty strings")
         focus_items.append(item.strip())
-    return CopilotIssueDraft(
+
+    if needs_local_review:
+        if not summary:
+            raise ValueError(
+                "Copilot decision field 'summary' is required when local review is needed"
+            )
+        if not compatibility_risk:
+            raise ValueError(
+                "Copilot decision field 'compatibility_risk' is required "
+                "when local review is needed"
+            )
+        if not focus_items:
+            raise ValueError(
+                "Copilot decision field 'review_focus' must be non-empty "
+                "when local review is needed"
+            )
+
+    return CopilotCompatibilityDecision(
+        needs_local_review=needs_local_review,
+        decision_reason=decision_reason,
         summary=summary,
         compatibility_risk=compatibility_risk,
         review_focus=focus_items,
     )
 
 
-def build_issue_payload(evidence: str, draft: CopilotIssueDraft) -> tuple[str, str]:
+def build_issue_payload(evidence: str, decision: CopilotCompatibilityDecision) -> tuple[str, str]:
     marker = extract_marker(evidence)
     tag = marker.rsplit(":", 1)[-1]
     title = f"{ISSUE_TITLE_PREFIX}LiveSync {tag}: review upstream compatibility changes"
     evidence_without_marker = MARKER_RE.sub("", evidence, count=1).lstrip()
     safe_evidence = _redact_embedded_markers(evidence_without_marker)
-    safe_summary = _redact_embedded_markers(draft.summary)
-    safe_compatibility_risk = _redact_embedded_markers(draft.compatibility_risk)
-    safe_review_focus = [_redact_embedded_markers(item) for item in draft.review_focus]
+    safe_decision_reason = _redact_embedded_markers(decision.decision_reason)
+    safe_summary = _redact_embedded_markers(decision.summary)
+    safe_compatibility_risk = _redact_embedded_markers(decision.compatibility_risk)
+    safe_review_focus = [_redact_embedded_markers(item) for item in decision.review_focus]
     focus = "\n".join(f"- {item}" for item in safe_review_focus)
     body = "\n".join(
         [
             f"<!-- {marker} -->",
+            "",
+            "## Compatibility Decision",
+            "",
+            safe_decision_reason,
             "",
             "## Automated Summary",
             "",
@@ -156,7 +187,7 @@ def _redact_embedded_markers(value: str) -> str:
     return MARKER_TOKEN_RE.sub(EMBEDDED_MARKER_REDACTION, without_comment_markers)
 
 
-def publish_issue(evidence_path: Path, draft_path: Path, client: IssueClient) -> str:
+def publish_issue(evidence_path: Path, decision_path: Path, client: IssueClient) -> str:
     if not evidence_path.exists() or not evidence_path.read_text().strip():
         return "noop"
 
@@ -165,8 +196,11 @@ def publish_issue(evidence_path: Path, draft_path: Path, client: IssueClient) ->
     if client.issue_exists(marker):
         return "skipped_existing"
 
-    draft = parse_copilot_draft(draft_path.read_text())
-    title, body = build_issue_payload(evidence, draft)
+    decision = parse_copilot_decision(decision_path.read_text())
+    if not decision.needs_local_review:
+        return "skipped_not_needed"
+
+    title, body = build_issue_payload(evidence, decision)
     client.create_issue(title, body)
     return "created"
 
@@ -191,23 +225,39 @@ def _parse_json_object(raw: str) -> dict[str, object]:
     try:
         payload = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Copilot draft is not valid JSON: {exc}") from exc
+        raise ValueError(f"Copilot decision is not valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
-        raise ValueError("Copilot draft must be a JSON object")
+        raise ValueError("Copilot decision must be a JSON object")
     return payload
 
 
 def _required_string(payload: dict[str, object], field: str) -> str:
     value = payload.get(field)
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"Copilot draft field '{field}' must be a non-empty string")
+        raise ValueError(f"Copilot decision field '{field}' must be a non-empty string")
     return value.strip()
+
+
+def _optional_string(payload: dict[str, object], field: str) -> str:
+    value = payload.get(field, "")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"Copilot decision field '{field}' must be a string")
+    return value.strip()
+
+
+def _required_bool(payload: dict[str, object], field: str) -> bool:
+    value = payload.get(field)
+    if not isinstance(value, bool):
+        raise ValueError(f"Copilot decision field '{field}' must be a boolean")
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence", type=Path, required=True)
-    parser.add_argument("--draft", type=Path, required=True)
+    parser.add_argument("--decision", type=Path, required=True)
     parser.add_argument("--target-repo", default=os.environ.get("GITHUB_REPOSITORY"))
     parser.add_argument("--api-url", default=os.environ.get("GITHUB_API_URL", DEFAULT_API_URL))
     args = parser.parse_args(argv)
@@ -220,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("GH_TOKEN or GITHUB_TOKEN is required to create GitHub issues")
 
     client = GitHubIssueClient(token=token, target_repo=args.target_repo, api_url=args.api_url)
-    result = publish_issue(args.evidence, args.draft, client)
+    result = publish_issue(args.evidence, args.decision, client)
     print(result)
     return 0
 

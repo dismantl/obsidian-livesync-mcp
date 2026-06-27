@@ -1,9 +1,9 @@
 import pytest
 
 from obsidian_livesync_mcp.upstream_watch_issue import (
-    CopilotIssueDraft,
+    CopilotCompatibilityDecision,
     build_issue_payload,
-    parse_copilot_draft,
+    parse_copilot_decision,
     publish_issue,
 )
 
@@ -43,11 +43,13 @@ class FakeIssueClient:
         return "https://github.com/dismantl/obsidian-livesync-mcp/issues/1"
 
 
-def test_parse_copilot_draft_accepts_json_code_fence():
-    draft = parse_copilot_draft(
+def test_parse_copilot_decision_accepts_json_code_fence():
+    decision = parse_copilot_decision(
         """
 ```json
 {
+  "needs_local_review": true,
+  "decision_reason": "The upstream files overlap with local chunking assumptions.",
   "summary": "The release changed the chunking implementation.",
   "compatibility_risk": "Local chunk parsing should be reviewed.",
   "review_focus": ["Compare chunk boundaries.", "Run chunking tests."]
@@ -56,29 +58,64 @@ def test_parse_copilot_draft_accepts_json_code_fence():
 """.strip()
     )
 
-    assert draft == CopilotIssueDraft(
+    assert decision == CopilotCompatibilityDecision(
+        needs_local_review=True,
+        decision_reason="The upstream files overlap with local chunking assumptions.",
         summary="The release changed the chunking implementation.",
         compatibility_risk="Local chunk parsing should be reviewed.",
         review_focus=["Compare chunk boundaries.", "Run chunking tests."],
     )
 
 
-def test_parse_copilot_draft_rejects_missing_fields():
+def test_parse_copilot_decision_accepts_no_review_decision():
+    decision = parse_copilot_decision(
+        """
+{
+  "needs_local_review": false,
+  "decision_reason": "Only docs changed upstream; local compatibility code is unaffected.",
+  "summary": "",
+  "compatibility_risk": "",
+  "review_focus": []
+}
+""".strip()
+    )
+
+    assert decision == CopilotCompatibilityDecision(
+        needs_local_review=False,
+        decision_reason="Only docs changed upstream; local compatibility code is unaffected.",
+        summary="",
+        compatibility_risk="",
+        review_focus=[],
+    )
+
+
+def test_parse_copilot_decision_rejects_missing_fields_when_review_needed():
     with pytest.raises(ValueError, match="compatibility_risk"):
-        parse_copilot_draft('{"summary": "Only a summary.", "review_focus": ["Check tests."]}')
+        parse_copilot_decision(
+            '{"needs_local_review": true, '
+            '"decision_reason": "Relevant upstream code changed.", '
+            '"summary": "Only a summary.", '
+            '"review_focus": ["Check tests."]}'
+        )
 
 
 def test_build_issue_payload_preserves_marker_and_scanner_evidence():
-    draft = CopilotIssueDraft(
+    decision = CopilotCompatibilityDecision(
+        needs_local_review=True,
+        decision_reason="The upstream files overlap with local chunking assumptions.",
         summary="Chunking code changed upstream.",
         compatibility_risk="The local Rabin-Karp splitter may need updates.",
         review_focus=["Inspect chunk boundaries.", "Run storage fixture tests."],
     )
 
-    title, body = build_issue_payload(SAMPLE_EVIDENCE, draft)
+    title, body = build_issue_payload(SAMPLE_EVIDENCE, decision)
 
     assert title == "[upstream-watch] LiveSync 0.25.77: review upstream compatibility changes"
     assert body.startswith("<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77 -->")
+    assert (
+        "## Compatibility Decision\n\n"
+        "The upstream files overlap with local chunking assumptions." in body
+    )
     assert "## Automated Summary\n\nChunking code changed upstream." in body
     assert "## Compatibility Risk\n\nThe local Rabin-Karp splitter may need updates." in body
     assert "- Inspect chunk boundaries." in body
@@ -89,7 +126,9 @@ def test_build_issue_payload_preserves_marker_and_scanner_evidence():
 
 
 def test_build_issue_payload_redacts_embedded_markers_from_scanner_evidence():
-    draft = CopilotIssueDraft(
+    decision = CopilotCompatibilityDecision(
+        needs_local_review=True,
+        decision_reason="The upstream files overlap with local chunking assumptions.",
         summary="Chunking code changed upstream.",
         compatibility_risk="The local Rabin-Karp splitter may need updates.",
         review_focus=["Inspect chunk boundaries."],
@@ -100,15 +139,17 @@ def test_build_issue_payload_redacts_embedded_markers_from_scanner_evidence():
         + "<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.78 -->\n"
     )
 
-    _, body = build_issue_payload(evidence, draft)
+    _, body = build_issue_payload(evidence, decision)
 
     assert body.count("upstream-release-watch:dismantl/obsidian-livesync-mcp:") == 1
     assert body.startswith("<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77 -->")
     assert "<!-- redacted upstream release watch marker -->" in body
 
 
-def test_build_issue_payload_redacts_markers_from_copilot_draft():
-    draft = CopilotIssueDraft(
+def test_build_issue_payload_redacts_markers_from_copilot_decision():
+    decision = CopilotCompatibilityDecision(
+        needs_local_review=True,
+        decision_reason="Check upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.81",
         summary=("Chunking changed. upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.78"),
         compatibility_risk=(
             "<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.79 -->"
@@ -118,23 +159,27 @@ def test_build_issue_payload_redacts_markers_from_copilot_draft():
         ],
     )
 
-    _, body = build_issue_payload(SAMPLE_EVIDENCE, draft)
+    _, body = build_issue_payload(SAMPLE_EVIDENCE, decision)
 
     assert body.count("upstream-release-watch:dismantl/obsidian-livesync-mcp:") == 1
     assert body.startswith("<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77 -->")
-    assert body.count("<!-- redacted upstream release watch marker -->") == 3
+    assert body.count("<!-- redacted upstream release watch marker -->") == 4
     assert "Chunking changed." in body
     assert "- Review <!-- redacted upstream release watch marker -->" in body
 
 
 def test_publish_issue_skips_missing_evidence(tmp_path):
-    draft_path = tmp_path / "draft.json"
-    draft_path.write_text(
-        '{"summary": "No-op.", "compatibility_risk": "No-op.", "review_focus": ["No-op."]}'
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(
+        '{"needs_local_review": false, '
+        '"decision_reason": "No-op.", '
+        '"summary": "", '
+        '"compatibility_risk": "", '
+        '"review_focus": []}'
     )
     client = FakeIssueClient()
 
-    result = publish_issue(tmp_path / "missing.md", draft_path, client)
+    result = publish_issue(tmp_path / "missing.md", decision_path, client)
 
     assert result == "noop"
     assert client.created == []
@@ -143,32 +188,55 @@ def test_publish_issue_skips_missing_evidence(tmp_path):
 def test_publish_issue_deduplicates_existing_marker(tmp_path):
     evidence_path = tmp_path / "evidence.md"
     evidence_path.write_text(SAMPLE_EVIDENCE)
-    draft_path = tmp_path / "draft.json"
-    draft_path.write_text(
-        '{"summary": "Chunking changed.", '
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(
+        '{"needs_local_review": true, '
+        '"decision_reason": "Relevant upstream code changed.", '
+        '"summary": "Chunking changed.", '
         '"compatibility_risk": "Review local chunking.", '
         '"review_focus": ["Run tests."]}'
     )
     client = FakeIssueClient(existing=True)
 
-    result = publish_issue(evidence_path, draft_path, client)
+    result = publish_issue(evidence_path, decision_path, client)
 
     assert result == "skipped_existing"
+    assert client.created == []
+
+
+def test_publish_issue_skips_when_copilot_finds_no_local_review_needed(tmp_path):
+    evidence_path = tmp_path / "evidence.md"
+    evidence_path.write_text(SAMPLE_EVIDENCE)
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(
+        '{"needs_local_review": false, '
+        '"decision_reason": "The upstream change only touched docs.", '
+        '"summary": "", '
+        '"compatibility_risk": "", '
+        '"review_focus": []}'
+    )
+    client = FakeIssueClient()
+
+    result = publish_issue(evidence_path, decision_path, client)
+
+    assert result == "skipped_not_needed"
     assert client.created == []
 
 
 def test_publish_issue_creates_validated_issue(tmp_path):
     evidence_path = tmp_path / "evidence.md"
     evidence_path.write_text(SAMPLE_EVIDENCE)
-    draft_path = tmp_path / "draft.json"
-    draft_path.write_text(
-        '{"summary": "Chunking changed.", '
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(
+        '{"needs_local_review": true, '
+        '"decision_reason": "Relevant upstream code changed.", '
+        '"summary": "Chunking changed.", '
         '"compatibility_risk": "Review local chunking.", '
         '"review_focus": ["Run tests."]}'
     )
     client = FakeIssueClient()
 
-    result = publish_issue(evidence_path, draft_path, client)
+    result = publish_issue(evidence_path, decision_path, client)
 
     assert result == "created"
     assert len(client.created) == 1
@@ -180,6 +248,7 @@ def test_publish_issue_creates_validated_issue(tmp_path):
     assert created["body"].startswith(
         "<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77 -->"
     )
+    assert "## Compatibility Decision\n\nRelevant upstream code changed." in created["body"]
     assert "## Automated Summary\n\nChunking changed." in created["body"]
     assert "## Compatibility Risk\n\nReview local chunking." in created["body"]
     assert "- Run tests." in created["body"]
