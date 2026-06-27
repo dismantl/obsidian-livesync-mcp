@@ -132,9 +132,15 @@ def test_publish_issue_creates_validated_issue(tmp_path):
     result = publish_issue(evidence_path, draft_path, client)
 
     assert result == "created"
-    assert client.created == [
-        {
-            "title": "[upstream-watch] LiveSync 0.25.77: review upstream compatibility changes",
-            "body": client.created[0]["body"],
-        }
-    ]
+    assert len(client.created) == 1
+    created = client.created[0]
+    assert (
+        created["title"]
+        == "[upstream-watch] LiveSync 0.25.77: review upstream compatibility changes"
+    )
+    assert created["body"].startswith(
+        "<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77 -->"
+    )
+    assert "## Automated Summary\n\nChunking changed." in created["body"]
+    assert "## Compatibility Risk\n\nReview local chunking." in created["body"]
+    assert "- Run tests." in created["body"]
