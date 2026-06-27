@@ -38,6 +38,13 @@ MARKER_TOKEN_RE = re.compile(
     r"upstream-release-watch:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:[^\s<>)\]}\"']+"
 )
 EMBEDDED_MARKER_REDACTION = "<!-- redacted upstream release watch marker -->"
+REQUIRED_ISSUE_BODY_HEADINGS = (
+    "Upstream Release",
+    "Upstream Release Notes",
+    "Watched Areas That Changed",
+    "Compatibility Assessment",
+    "Next Steps",
+)
 
 
 @dataclass(frozen=True)
@@ -175,12 +182,24 @@ def parse_copilot_decision(raw: str) -> CopilotCompatibilityDecision:
                 "Copilot decision field 'issue_body_markdown' must be non-empty "
                 "when local review is needed"
             )
+        _validate_issue_body_markdown(issue_body_markdown)
 
     return CopilotCompatibilityDecision(
         needs_local_review=needs_local_review,
         decision_reason=decision_reason,
         issue_body_markdown=issue_body_markdown,
     )
+
+
+def _validate_issue_body_markdown(issue_body_markdown: str) -> None:
+    missing_headings = [
+        heading
+        for heading in REQUIRED_ISSUE_BODY_HEADINGS
+        if not re.search(rf"^##\s+{re.escape(heading)}\s*$", issue_body_markdown, re.MULTILINE)
+    ]
+    if missing_headings:
+        missing = ", ".join(missing_headings)
+        raise ValueError(f"Copilot decision field 'issue_body_markdown' is missing: {missing}")
 
 
 def build_issue_payload(evidence: str, decision: CopilotCompatibilityDecision) -> tuple[str, str]:
