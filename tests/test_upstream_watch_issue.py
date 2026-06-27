@@ -236,6 +236,10 @@ def test_publish_issue_records_tracker_marker_when_copilot_finds_no_local_review
     assert "## LiveSync 0.25.77: no local compatibility review needed" in entry
     assert "### Compatibility Decision\n\nThe upstream change only touched docs." in entry
     assert "does not require local compatibility review" in entry
+    assert "### Scanner Evidence" not in entry
+    assert "## Matched Watch Areas" not in entry
+    assert "src/lib/src/string_and_binary/chunks.ts" not in entry
+    assert "https://github.com/vrtmrz/obsidian-livesync/compare/0.25.76...0.25.77" not in entry
 
 
 def test_publish_issue_creates_validated_issue(tmp_path):

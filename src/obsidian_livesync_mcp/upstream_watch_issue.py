@@ -251,7 +251,8 @@ def build_issue_payload(evidence: str, decision: CopilotCompatibilityDecision) -
 
 
 def build_no_review_tracker_entry(evidence: str, decision: CopilotCompatibilityDecision) -> str:
-    marker, tag, safe_evidence = _issue_context(evidence)
+    marker = extract_marker(evidence)
+    tag = marker.rsplit(":", 1)[-1]
     safe_decision_reason = _redact_embedded_markers(decision.decision_reason)
     return "\n".join(
         [
@@ -267,10 +268,6 @@ def build_no_review_tracker_entry(evidence: str, decision: CopilotCompatibilityD
                 "Copilot determined that this upstream release does not require "
                 "local compatibility review."
             ),
-            "",
-            "### Scanner Evidence",
-            "",
-            safe_evidence.rstrip(),
             "",
         ]
     )
