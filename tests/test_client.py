@@ -47,6 +47,28 @@ async def test_note_path_operations_reject_unsafe_vault_paths(client):
             await operation()
 
 
+async def test_folder_operations_reject_unsafe_vault_paths_before_couchdb(client, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    unsafe_folder = "Notes/../outside"
+    get_client = AsyncMock()
+    monkeypatch.setattr(client, "_get_client", get_client)
+    operations = [
+        lambda: client.list_notes(folder=unsafe_folder),
+        lambda: client.search_notes("query", folder=unsafe_folder),
+        lambda: client.list_tags(folder=unsafe_folder),
+        lambda: client.search_by_tag("tag", folder=unsafe_folder),
+        lambda: client.list_attachments(folder=unsafe_folder),
+        lambda: client.find_orphan_attachments(folder=unsafe_folder),
+    ]
+
+    for operation in operations:
+        with pytest.raises(ValueError, match="Vault path"):
+            await operation()
+
+    get_client.assert_not_awaited()
+
+
 def _make_parent_doc(doc_id, children, **kwargs):
     """Helper to build a CouchDB parent document."""
     doc = {

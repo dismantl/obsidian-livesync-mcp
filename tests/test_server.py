@@ -488,6 +488,28 @@ async def test_create_upload_url_tool_mints_capability_url_with_global_cap():
     assert record.max_bytes == 10
 
 
+async def test_create_upload_url_tool_rejects_unsafe_path_before_minting():
+    from unittest.mock import AsyncMock, Mock, patch
+
+    import obsidian_livesync_mcp.server as srv
+    from obsidian_livesync_mcp.links import EphemeralLinkStore
+
+    get_client = Mock(return_value=AsyncMock())
+    token_factory = Mock(return_value="upload-token")
+    store = EphemeralLinkStore(now=lambda: 1000.0, token_factory=token_factory)
+    with (
+        patch.object(srv, "_transport", "streamable-http"),
+        patch.object(srv, "_resource_url", "https://mcp.example"),
+        patch.object(srv, "_link_store", store),
+        patch.object(srv, "_get_client", get_client),
+    ):
+        result = await srv.create_upload_url("img/../outside.png")
+
+    assert result.startswith("Error: Vault paths must not contain traversal segments")
+    get_client.assert_not_called()
+    token_factory.assert_not_called()
+
+
 async def test_add_attachment_tool_decodes_base64():
     import base64
     from unittest.mock import AsyncMock, patch
