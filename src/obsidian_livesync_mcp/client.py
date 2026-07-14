@@ -31,6 +31,7 @@ from .utils import (
     generate_chunk_id,
     normalize_doc_id,
     set_frontmatter,
+    validate_vault_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -326,9 +327,9 @@ class ObsidianVaultClient(AttachmentOps):
         disabled. Obfuscated paths cannot be prefix-scanned, so they fall back
         to the normal non-chunk ranges and filter by the stored path field.
         """
-        client = await self._get_client()
         batch_size = max(1, int(batch_size))
         folder_lower = _folder_filter(folder)
+        client = await self._get_client()
 
         for doc_range in _file_doc_ranges(folder, self.config.obfuscate_passphrase):
             startkey = doc_range.get("startkey")
@@ -420,6 +421,7 @@ class ObsidianVaultClient(AttachmentOps):
 
     async def health_check_note(self, path: str) -> NoteHealth:
         """Classify a note's chunk children as live, tombstoned, or missing."""
+        path = validate_vault_path(path)
         doc = await self._get_doc(path)
         if not doc:
             raise ValueError(f"Note not found: {path}")
@@ -487,6 +489,7 @@ class ObsidianVaultClient(AttachmentOps):
         won't re-delete it on the next replication. If that happens, rebuild the
         affected client's local DB so the resurrected revisions win.
         """
+        path = validate_vault_path(path)
         await self._write_file_doc(path, raw, is_text=is_text)
         content = await self.read_note(path)
         if content is None:
@@ -508,6 +511,7 @@ class ObsidianVaultClient(AttachmentOps):
         inline_budget_bytes: int | None = None,
     ) -> FileInfo | None:
         """Read file metadata without fetching chunk bytes."""
+        path = validate_vault_path(path)
         doc = await self._get_doc(path)
         if not doc or doc.get("deleted"):
             return None
@@ -541,6 +545,7 @@ class ObsidianVaultClient(AttachmentOps):
         retry_delay: float = READ_RETRY_DELAY,
     ) -> NoteRange | None:
         """Read a character range from a text note without materializing it."""
+        path = validate_vault_path(path)
         if length < 0:
             raise ValueError("length must be >= 0")
 
@@ -696,6 +701,7 @@ class ObsidianVaultClient(AttachmentOps):
         attempt (e.g. a genuinely broken manifest). For bulk scans that should
         skip broken notes instead of raising, use _read_note_content.
         """
+        path = validate_vault_path(path)
         last_missing: list[str] = []
         for attempt in range(retries + 1):
             doc = await self._get_doc(path)
@@ -769,8 +775,8 @@ class ObsidianVaultClient(AttachmentOps):
         expected_rev: str | None = None,
     ) -> bool:
         """Create/update a file doc from raw bytes using LiveSync chunk docs."""
+        vault_path = validate_vault_path(path)
         client = await self._get_client()
-        vault_path = path.lstrip("/")
         doc_id = self._doc_id(vault_path)
         encoded_id = encode_doc_id(doc_id)
 
@@ -841,6 +847,7 @@ class ObsidianVaultClient(AttachmentOps):
 
     async def append_note(self, path: str, content: str) -> bool:
         """Append content to an existing note. Returns True on success."""
+        path = validate_vault_path(path)
         client = await self._get_client()
 
         doc = await self._get_doc(path)
@@ -918,6 +925,7 @@ class ObsidianVaultClient(AttachmentOps):
         only for broken-manifest cleanup (missing-chunk recovery) — this form
         does NOT propagate to filesystem copies on livesync-connected devices.
         """
+        path = validate_vault_path(path)
         client = await self._get_client()
 
         doc = await self._get_doc(path)
@@ -993,6 +1001,7 @@ class ObsidianVaultClient(AttachmentOps):
         self, query: str, folder: str | None = None, limit: int = 20
     ) -> list[SearchResult]:
         """Search note content using chunk scanning with reverse map."""
+        folder_lower = _folder_filter(folder)
         client = await self._get_client()
 
         # Build chunk-to-parent reverse map
@@ -1029,8 +1038,7 @@ class ObsidianVaultClient(AttachmentOps):
             parent_path = parent.get("path", parent.get("_id", ""))
 
             # Filter by folder if specified
-            if folder:
-                folder_lower = folder.strip("/").lower() + "/"
+            if folder_lower:
                 if not parent_path.lower().startswith(folder_lower):
                     continue
 
@@ -1103,9 +1111,9 @@ class ObsidianVaultClient(AttachmentOps):
 
     async def list_tags(self, folder: str | None = None) -> dict[str, int]:
         """Scan all notes and return tag -> count mapping."""
+        folder_lower = _folder_filter(folder)
         all_docs = await self._get_all_file_docs()
-        if folder:
-            folder_lower = folder.strip("/").lower() + "/"
+        if folder_lower:
             all_docs = [
                 d for d in all_docs if d.get("_id", "").lstrip("/").startswith(folder_lower)
             ]
@@ -1126,9 +1134,9 @@ class ObsidianVaultClient(AttachmentOps):
         self, tag: str, folder: str | None = None, limit: int = 20
     ) -> list[NoteMetadata]:
         """Find notes containing a specific tag (frontmatter or inline)."""
+        folder_lower = _folder_filter(folder)
         all_docs = await self._get_all_file_docs()
-        if folder:
-            folder_lower = folder.strip("/").lower() + "/"
+        if folder_lower:
             all_docs = [
                 d for d in all_docs if d.get("_id", "").lstrip("/").startswith(folder_lower)
             ]
@@ -1170,6 +1178,8 @@ class ObsidianVaultClient(AttachmentOps):
         """Find all notes that contain a wikilink pointing to the given path."""
         import re
 
+        path = validate_vault_path(path)
+
         # Normalize target: strip folder prefix and extension for matching
         target_name = path.rsplit("/", 1)[-1]  # filename
         if target_name.endswith(".md"):
@@ -1208,9 +1218,9 @@ def _is_file_doc(doc: dict) -> bool:
 
 
 def _folder_filter(folder: str | None) -> str | None:
-    if not folder:
+    if folder is None:
         return None
-    stripped = folder.strip("/")
+    stripped = validate_vault_path(folder, allow_root=True).strip("/")
     return f"{stripped.lower()}/" if stripped else None
 
 

@@ -1,5 +1,7 @@
 """Tests for obsidian_livesync_mcp.utils — pure function tests."""
 
+import pytest
+
 from obsidian_livesync_mcp.utils import (
     encode_doc_id,
     extract_attachment_refs,
@@ -11,6 +13,7 @@ from obsidian_livesync_mcp.utils import (
     ref_basename,
     rewrite_attachment_refs,
     set_frontmatter,
+    validate_vault_path,
 )
 
 # ── generate_chunk_id ─────────────────────────────────────────────
@@ -113,6 +116,36 @@ def test_normalize_doc_id_obfuscated_different_passphrase():
     id1 = normalize_doc_id("test.md", obfuscate_passphrase="pass1")
     id2 = normalize_doc_id("test.md", obfuscate_passphrase="pass2")
     assert id1 != id2
+
+
+# ── validate_vault_path ───────────────────────────────────────────
+
+
+def test_validate_vault_path_returns_relative_path_unchanged():
+    assert validate_vault_path("Notes/todo.md") == "Notes/todo.md"
+
+
+def test_validate_vault_path_allows_empty_root_when_requested():
+    assert validate_vault_path("", allow_root=True) == ""
+
+
+@pytest.mark.parametrize(
+    "path, message",
+    [
+        ("", "vault root"),
+        ("/Notes/todo.md", "relative to the vault root"),
+        ("\\Notes\\todo.md", "relative to the vault root"),
+        ("C:/Users/Example/vault/todo.md", "relative to the vault root"),
+        ("C:\\Users\\Example\\vault\\todo.md", "relative to the vault root"),
+        ("Notes\\todo.md", "forward slashes"),
+        ("../outside.md", "traversal segments"),
+        ("Notes/../outside.md", "traversal segments"),
+        ("Notes/./todo.md", "traversal segments"),
+    ],
+)
+def test_validate_vault_path_rejects_paths_outside_root(path, message):
+    with pytest.raises(ValueError, match=message):
+        validate_vault_path(path)
 
 
 # ── encode_doc_id ─────────────────────────────────────────────────

@@ -14,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from .client import ObsidianVaultClient
 from .config import Config
 from .links import EphemeralLinkStore
+from .utils import validate_vault_path
 
 logger = logging.getLogger(__name__)
 
@@ -594,8 +595,7 @@ async def create_upload_url(
     resource_url = _transfer_resource_url()
     if resource_url is None:
         return "Upload URLs are not available over stdio; use streamable-http."
-    if not path.strip("/"):
-        raise ValueError("path is required")
+    path = validate_vault_path(path)
 
     client = _get_client()
     ttl = ttl_seconds if ttl_seconds is not None else client.config.link_ttl_seconds

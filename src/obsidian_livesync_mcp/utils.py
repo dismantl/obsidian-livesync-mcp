@@ -41,6 +41,33 @@ def _hash_string(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+def validate_vault_path(vault_path: str, *, allow_root: bool = False) -> str:
+    """Validate a LiveSync storage path and return it unchanged.
+
+    Upstream LiveSync treats storage paths as platform-neutral, slash-separated
+    paths relative to the configured vault root. Rejecting absolute paths,
+    drive-qualified paths, backslashes, and traversal segments keeps documents
+    written here from targeting locations outside that root when Obsidian or the
+    LiveSync CLI later applies them to storage.
+    """
+    if vault_path == "":
+        if allow_root:
+            return vault_path
+        raise ValueError("Vault path must refer to a file, not the vault root")
+
+    if vault_path.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", vault_path):
+        raise ValueError(f"Vault paths must be relative to the vault root: {vault_path}")
+
+    if "\\" in vault_path:
+        raise ValueError(f"Vault paths must use forward slashes: {vault_path}")
+
+    segments = vault_path.split("/")
+    if any(segment in (".", "..") for segment in segments):
+        raise ValueError(f"Vault paths must not contain traversal segments: {vault_path}")
+
+    return vault_path
+
+
 def normalize_doc_id(
     vault_path: str,
     obfuscate_passphrase: str | None = None,

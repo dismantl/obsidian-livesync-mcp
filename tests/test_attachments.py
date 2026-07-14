@@ -215,6 +215,25 @@ async def test_write_and_read_attachment_roundtrip():
     assert att.to_dict()["data_base64"] == base64.b64encode(b"hello").decode("ascii")
 
 
+async def test_write_attachment_rejects_unsafe_path():
+    client = _MemoryAttachmentClient()
+
+    with pytest.raises(ValueError, match="Vault path"):
+        await client.write_attachment("Attachments/../outside.png", b"hello")
+
+
+async def test_move_attachment_rejects_unsafe_target_before_writing():
+    client = _MemoryAttachmentClient(
+        docs=[_doc("Attachments/photo.png", doc_type="newnote")],
+        raw={"Attachments/photo.png": b"hello"},
+    )
+
+    with pytest.raises(ValueError, match="Vault path"):
+        await client.move_attachment("Attachments/photo.png", "../outside.png")
+
+    assert client.put_docs == []
+
+
 @pytest.mark.parametrize(
     "extension",
     [".md", ".txt", ".svg", ".html", ".csv", ".css", ".js", ".xml", ".canvas"],
