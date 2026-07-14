@@ -11,6 +11,7 @@ from .utils import (
     extract_attachment_refs,
     ref_basename,
     rewrite_attachment_refs,
+    validate_vault_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class AttachmentOps:
 
     async def write_attachment(self, path: str, data: bytes) -> bool:
         """Create or replace a binary attachment."""
+        path = validate_vault_path(path)
         if _is_livesync_plain_text_path(path):
             raise ValueError(
                 "add_attachment only supports binary attachments; use note tools "
@@ -59,6 +61,7 @@ class AttachmentOps:
 
     async def get_attachment_metadata(self, path: str) -> AttachmentMetadata | None:
         """Read attachment metadata without fetching chunk bytes."""
+        path = validate_vault_path(path)
         doc = await self._get_doc(path)
         if not doc or doc.get("deleted"):
             return None
@@ -81,6 +84,7 @@ class AttachmentOps:
         if length > max_bytes:
             raise ValueError(f"length {length} exceeds max_bytes={max_bytes}")
 
+        path = validate_vault_path(path)
         doc = await self._get_doc(path)
         if not doc or doc.get("deleted"):
             return None
@@ -147,6 +151,7 @@ class AttachmentOps:
 
     async def find_attachment_embeds(self, path: str) -> list[BacklinkInfo]:
         """Find notes that reference an attachment by basename."""
+        path = validate_vault_path(path)
         target_base = ref_basename(path)
         results: list[BacklinkInfo] = []
 
@@ -167,7 +172,7 @@ class AttachmentOps:
 
     async def find_orphan_attachments(self, folder: str | None = None) -> list[AttachmentMetadata]:
         """Find attachments that no note references."""
-        folder_lower = folder.strip("/").lower() + "/" if folder else None
+        folder_lower = _folder_filter(folder)
         attachments: list[dict] = []
         referenced: set[str] = set()
 
@@ -190,6 +195,7 @@ class AttachmentOps:
 
     async def remove_attachment(self, path: str, hard: bool = False, force: bool = False) -> dict:
         """Remove an attachment, guarding against live references by default."""
+        path = validate_vault_path(path)
         doc = await self._get_doc(path)
         if not doc or doc.get("deleted"):
             raise ValueError(f"Attachment not found: {path}")
@@ -208,6 +214,8 @@ class AttachmentOps:
         self, old_path: str, new_path: str, rewrite_links: bool = True
     ) -> dict:
         """Move a binary attachment and optionally rewrite note references."""
+        old_path = validate_vault_path(old_path)
+        new_vault_path = validate_vault_path(new_path)
         client = await self._get_client()
 
         old_doc = await self._get_doc(old_path)
@@ -216,7 +224,6 @@ class AttachmentOps:
         if old_doc.get("type") != "newnote":
             raise ValueError(f"Not a binary attachment: {old_path}")
 
-        new_vault_path = new_path.lstrip("/")
         if _is_livesync_plain_text_path(new_vault_path):
             raise ValueError(
                 "move_attachment only supports binary attachment targets; use note tools "
@@ -442,6 +449,13 @@ class AttachmentOps:
 
 def _is_livesync_plain_text_path(path: str) -> bool:
     return path.lower().endswith(tuple(_LIVESYNC_PLAIN_TEXT_EXTENSIONS))
+
+
+def _folder_filter(folder: str | None) -> str | None:
+    if folder is None:
+        return None
+    stripped = validate_vault_path(folder, allow_root=True).strip("/")
+    return f"{stripped.lower()}/" if stripped else None
 
 
 def _page_batch_size(limit: int, skip: int) -> int:

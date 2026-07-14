@@ -27,6 +27,26 @@ def client(config):
     return ObsidianVaultClient(config)
 
 
+async def test_note_path_operations_reject_unsafe_vault_paths(client):
+    unsafe_path = "Notes/../outside.md"
+
+    operations = [
+        lambda: client.read_note(unsafe_path),
+        lambda: client.write_note(unsafe_path, "content"),
+        lambda: client.append_note(unsafe_path, "content"),
+        lambda: client.delete_note(unsafe_path),
+        lambda: client.get_file_info(unsafe_path),
+        lambda: client.read_note_range(unsafe_path, 0, 10),
+        lambda: client.health_check_note(unsafe_path),
+        lambda: client.repair_note_from_bytes(unsafe_path, b"content"),
+        lambda: client.get_backlinks(unsafe_path),
+    ]
+
+    for operation in operations:
+        with pytest.raises(ValueError, match="Vault path"):
+            await operation()
+
+
 def _make_parent_doc(doc_id, children, **kwargs):
     """Helper to build a CouchDB parent document."""
     doc = {

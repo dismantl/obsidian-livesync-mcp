@@ -102,6 +102,16 @@ def test_utf8_boundary_safety():
     assert "".join(chunks) == content
 
 
+def test_text_chunk_boundary_preserves_leading_bom():
+    """Regression guard for LiveSync 0.25.81's U+FEFF chunk-boundary fix."""
+    content = f"{'a' * 1024}\ufeff{'b' * 1024}"
+    chunks = split_chunks(content.encode("utf-8"), is_text=True)
+
+    assert len(chunks) == 3
+    assert chunks[1].startswith("\ufeff")
+    assert "".join(chunks) == content
+
+
 def test_max_chunk_size_respected():
     """No chunk should exceed the absolute max piece size."""
     max_size = 102400  # 100KB
