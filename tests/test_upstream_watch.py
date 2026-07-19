@@ -92,6 +92,8 @@ def test_upstream_release_watch_uses_direct_copilot_cli_auto_model_selection():
     assert "needs_local_review" in workflow_text
     assert "issue_body_markdown" in workflow_text
     assert "whether deterministic upstream release evidence warrants" in workflow_text
+    assert "Include all five headings below exactly as written and in this" in workflow_text
+    assert "do not rename or omit a heading" in workflow_text
     assert "summary" not in workflow_text
     assert "compatibility_risk" not in workflow_text
     assert "review_focus" not in workflow_text

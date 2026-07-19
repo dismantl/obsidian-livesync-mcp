@@ -119,16 +119,18 @@ def test_parse_copilot_decision_rejects_missing_issue_body_when_review_needed():
         )
 
 
-def test_parse_copilot_decision_rejects_missing_issue_body_sections_when_review_needed():
-    with pytest.raises(ValueError, match="Upstream Release Notes"):
-        parse_copilot_decision(
-            '{"needs_local_review": true, '
-            '"decision_reason": "Relevant upstream code changed.", '
-            '"issue_body_markdown": "## Upstream Release\\n\\n0.25.78\\n\\n'
-            "## Watched Areas That Changed\\n\\nChunking.\\n\\n"
-            "## Compatibility Assessment\\n\\nReview local chunking.\\n\\n"
-            '## Next Steps\\n\\n- Run tests."}'
-        )
+def test_parse_copilot_decision_defers_missing_issue_body_sections_to_publisher():
+    decision = parse_copilot_decision(
+        '{"needs_local_review": true, '
+        '"decision_reason": "Relevant upstream code changed.", '
+        '"issue_body_markdown": "## Upstream Release\\n\\n0.25.78\\n\\n'
+        "## Watched Areas That Changed\\n\\nChunking.\\n\\n"
+        "## Compatibility Assessment\\n\\nReview local chunking.\\n\\n"
+        '## Next Steps\\n\\n- Run tests."}'
+    )
+
+    assert decision.needs_local_review is True
+    assert "## Upstream Release Notes" not in decision.issue_body_markdown
 
 
 def test_build_issue_payload_uses_copilot_issue_body_and_collapses_scanner_evidence():
@@ -151,6 +153,65 @@ def test_build_issue_payload_uses_copilot_issue_body_and_collapses_scanner_evide
     assert "<summary>Scanner evidence</summary>" in body
     assert "src/lib/src/string_and_binary/chunks.ts" in body
     assert "https://github.com/vrtmrz/obsidian-livesync/compare/0.25.76...0.25.77" in body
+
+
+def test_build_issue_payload_fills_missing_release_notes_from_scanner_evidence():
+    evidence = (
+        SAMPLE_EVIDENCE
+        + """
+
+## Upstream Release Notes
+
+## 0.25.82
+
+The release fixes chunk delivery after replication completes.
+
+## Review Checklist
+
+- [ ] Review compatibility.
+"""
+    )
+    decision = CopilotCompatibilityDecision(
+        needs_local_review=True,
+        decision_reason="Relevant upstream code changed.",
+        issue_body_markdown=SAMPLE_ISSUE_BODY.replace(
+            "## Upstream Release Notes\n\nThe release notes mention chunking changes.\n\n", ""
+        ),
+    )
+
+    _, body = build_issue_payload(evidence, decision)
+
+    release_notes = (
+        "## Upstream Release Notes\n\n"
+        "## 0.25.82\n\nThe release fixes chunk delivery after replication completes."
+    )
+    assert release_notes in body
+    assert body.index("## Upstream Release") < body.index(release_notes)
+    assert body.index(release_notes) < body.index("## Watched Areas That Changed")
+    assert body.count("## Upstream Release Notes") == 2
+
+
+def test_build_issue_payload_fills_all_missing_sections_with_safe_fallbacks():
+    decision = CopilotCompatibilityDecision(
+        needs_local_review=True,
+        decision_reason="Relevant upstream code changed.",
+        issue_body_markdown="Copilot returned useful prose without the required headings.",
+    )
+
+    _, body = build_issue_payload(SAMPLE_EVIDENCE, decision)
+    visible_body = body.split("<details>", 1)[0]
+
+    for heading in (
+        "Upstream Release",
+        "Upstream Release Notes",
+        "Watched Areas That Changed",
+        "Compatibility Assessment",
+        "Next Steps",
+    ):
+        assert visible_body.count(f"## {heading}\n") == 1
+    assert "No upstream release notes were provided." in visible_body
+    assert "Relevant upstream code changed." in visible_body
+    assert "Run the relevant local tests" in visible_body
 
 
 def test_build_issue_payload_redacts_embedded_markers_from_scanner_evidence():

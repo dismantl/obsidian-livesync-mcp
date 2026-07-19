@@ -182,7 +182,6 @@ def parse_copilot_decision(raw: str) -> CopilotCompatibilityDecision:
                 "Copilot decision field 'issue_body_markdown' must be non-empty "
                 "when local review is needed"
             )
-        _validate_issue_body_markdown(issue_body_markdown)
 
     return CopilotCompatibilityDecision(
         needs_local_review=needs_local_review,
@@ -192,20 +191,85 @@ def parse_copilot_decision(raw: str) -> CopilotCompatibilityDecision:
 
 
 def _validate_issue_body_markdown(issue_body_markdown: str) -> None:
-    missing_headings = [
-        heading
-        for heading in REQUIRED_ISSUE_BODY_HEADINGS
-        if not re.search(rf"^##\s+{re.escape(heading)}\s*$", issue_body_markdown, re.MULTILINE)
-    ]
+    missing_headings = _missing_issue_body_headings(issue_body_markdown)
     if missing_headings:
         missing = ", ".join(missing_headings)
         raise ValueError(f"Copilot decision field 'issue_body_markdown' is missing: {missing}")
 
 
+def _missing_issue_body_headings(issue_body_markdown: str) -> list[str]:
+    return [
+        heading
+        for heading in REQUIRED_ISSUE_BODY_HEADINGS
+        if not _has_markdown_heading(issue_body_markdown, heading)
+    ]
+
+
+def _has_markdown_heading(markdown: str, heading: str) -> bool:
+    return re.search(rf"^##\s+{re.escape(heading)}\s*$", markdown, re.MULTILINE) is not None
+
+
+def _extract_markdown_section(markdown: str, heading: str, next_heading: str) -> str:
+    match = re.search(
+        (
+            rf"^##\s+{re.escape(heading)}\s*$\n"
+            rf"(.*?)(?=^##\s+{re.escape(next_heading)}\s*$|\Z)"
+        ),
+        markdown,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _complete_issue_body_markdown(evidence: str, decision: CopilotCompatibilityDecision) -> str:
+    body = decision.issue_body_markdown.rstrip()
+    fallback_sections = {
+        "Upstream Release": _extract_markdown_section(
+            evidence, "Upstream Release", "Matched Watch Areas"
+        )
+        or "See the upstream release details in the scanner evidence below.",
+        "Upstream Release Notes": _extract_markdown_section(
+            evidence, "Upstream Release Notes", "Review Checklist"
+        )
+        or "No upstream release notes were provided.",
+        "Watched Areas That Changed": (
+            "Copilot did not summarize the changed watch areas. Review the matched watch "
+            "areas and local files in the scanner evidence below."
+        ),
+        "Compatibility Assessment": decision.decision_reason,
+        "Next Steps": (
+            "1. Review the upstream compare and matched watch areas in the scanner evidence.\n"
+            "2. Run the relevant local tests before deciding whether code changes are needed."
+        ),
+    }
+
+    for heading in _missing_issue_body_headings(body):
+        section = f"## {heading}\n\n{fallback_sections[heading]}"
+        following_headings = REQUIRED_ISSUE_BODY_HEADINGS[
+            REQUIRED_ISSUE_BODY_HEADINGS.index(heading) + 1 :
+        ]
+        following_matches = [
+            re.search(rf"^##\s+{re.escape(following)}\s*$", body, re.MULTILINE)
+            for following in following_headings
+        ]
+        insert_at = min(
+            (match.start() for match in following_matches if match is not None),
+            default=len(body),
+        )
+        if insert_at == len(body):
+            body = f"{body}\n\n{section}".strip()
+        else:
+            body = f"{body[:insert_at].rstrip()}\n\n{section}\n\n{body[insert_at:].lstrip()}"
+
+    _validate_issue_body_markdown(body)
+    return body
+
+
 def build_issue_payload(evidence: str, decision: CopilotCompatibilityDecision) -> tuple[str, str]:
     marker, tag, safe_evidence = _issue_context(evidence)
     title = f"{ISSUE_TITLE_PREFIX}LiveSync {tag}: review upstream compatibility changes"
-    safe_issue_body = _redact_embedded_markers(decision.issue_body_markdown).rstrip()
+    completed_issue_body = _complete_issue_body_markdown(evidence, decision)
+    safe_issue_body = _redact_embedded_markers(completed_issue_body).rstrip()
     body = "\n".join(
         [
             f"<!-- {marker} -->",

@@ -85,7 +85,9 @@ jobs:
 
           When needs_local_review is true, write issue_body_markdown as a
           human-friendly triage report for a maintainer. Do not paste the raw evidence
-          wholesale; synthesize it into these sections:
+          wholesale. Include all five headings below exactly as written and in this
+          order; do not rename or omit a heading. Synthesize the evidence into these
+          sections:
 
           ## Upstream Release
           Include repository, release link, compared range, and compare URL.
