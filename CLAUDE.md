@@ -49,6 +49,12 @@ OBSIDIAN_COUCH_DB=obsidian-vault  # optional, defaults to "obsidian-vault"
 
 Fallback names also supported: `COUCHDB_URL`, `COUCHDB_USER`, `COUCHDB_PASSWORD`, `COUCHDB_DB`.
 
+When LiveSync has `usePathObfuscation` enabled, also set the matching passphrase:
+
+```bash
+OBSIDIAN_OBFUSCATE_PASSPHRASE=your-livesync-passphrase
+```
+
 ### OAuth Environment Variables (all required when `OAUTH_ISSUER_URL` is set)
 
 ```bash
@@ -93,21 +99,21 @@ Enabled when `OAUTH_ISSUER_URL` is set. Adds OAuth 2.1 authorization server dele
 
 Understanding this is essential for working on `client.py`, `utils.py`, or `chunking.py`:
 
-- Each note is stored as a **parent document** (CouchDB doc with `_id` = lowercased vault path) containing a `children` array of chunk IDs.
+- Each note is stored as a **parent document** containing a `children` array of chunk IDs. Its CouchDB `_id` is either the lowercased vault path or an `f:` hash generated from the matching LiveSync passphrase when path obfuscation is enabled.
 - **Chunk documents** hold the actual content (`_id` = `"h:" + xxhash64_base36`, `type` = `"leaf"`). Chunk IDs are content-hash based — same content always produces the same ID.
 - Content is split using **Rabin-Karp V3** content-defined chunking (PRIME=31, window=48 bytes, boundary when `hash % avgChunkSize == 1`) with LiveSync's fixed-unit sizing model. Current normal text targets 256 B average / 1 KiB max chunks; binary and very large text use the binary sizing path capped by LiveSync's 100 KiB document-size limit.
 - Chunking parity is pinned by golden fixtures under `tests/fixtures`. Refresh them only when intentionally tracking a new upstream LiveSync/commonlib version.
 - Binary chunks are independently base64-encoded byte ranges. Reassembly must decode each chunk and concatenate bytes; concatenating base64 strings corrupts multi-chunk binaries.
 - Attachments are binary parent docs with `type="newnote"`. Text notes use `type="plain"`.
 - Legacy documents (type `"notes"`) store content directly in a `data` field instead of chunks.
-- Paths starting with `_` (e.g., `_Changelog/`) get a `/` prefix because CouchDB reserves `_`-prefixed IDs.
+- Without path obfuscation, paths starting with `_` (e.g., `_Changelog/`) get a `/` prefix because CouchDB reserves `_`-prefixed IDs.
 - Reads must reassemble chunks in order. Writes must create chunk docs before the parent. Normal updates do not delete dropped chunks; orphan pruning is explicit maintenance. Deletes default to LiveSync-compatible soft-delete; hard-delete is opt-in for broken-manifest cleanup.
 
-### Required LiveSync Settings
+### LiveSync Compatibility Constraints
 
-These settings **must** be configured for compatibility:
+These settings constrain compatibility:
 - `encrypt: false` — no E2EE support
-- `usePathObfuscation: false` — no path deobfuscation
+- `usePathObfuscation: false` or `true` — when enabled, set `OBSIDIAN_OBFUSCATE_PASSPHRASE` to the matching LiveSync passphrase
 - `enableCompression: false` — no DEFLATE decompression
 - `handleFilenameCaseSensitive: false` — doc IDs are always lowercased
 
