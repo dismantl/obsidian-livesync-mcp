@@ -221,8 +221,27 @@ def _extract_markdown_section(markdown: str, heading: str, next_heading: str) ->
     return match.group(1).strip() if match else ""
 
 
+def _split_issue_body_sections(markdown: str) -> tuple[str, dict[str, str]]:
+    headings_pattern = "|".join(re.escape(heading) for heading in REQUIRED_ISSUE_BODY_HEADINGS)
+    matches = list(re.finditer(rf"^##\s+({headings_pattern})\s*$", markdown, flags=re.MULTILINE))
+    if not matches:
+        return markdown.strip(), {}
+
+    preamble = markdown[: matches[0].start()].strip()
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
+        content = markdown[match.end() : next_start].strip()
+        heading = match.group(1)
+        if heading in sections and content:
+            sections[heading] = f"{sections[heading]}\n\n{content}".strip()
+        else:
+            sections.setdefault(heading, content)
+    return preamble, sections
+
+
 def _complete_issue_body_markdown(evidence: str, decision: CopilotCompatibilityDecision) -> str:
-    body = decision.issue_body_markdown.rstrip()
+    preamble, sections = _split_issue_body_sections(decision.issue_body_markdown)
     fallback_sections = {
         "Upstream Release": _extract_markdown_section(
             evidence, "Upstream Release", "Matched Watch Areas"
@@ -243,23 +262,11 @@ def _complete_issue_body_markdown(evidence: str, decision: CopilotCompatibilityD
         ),
     }
 
-    for heading in _missing_issue_body_headings(body):
-        section = f"## {heading}\n\n{fallback_sections[heading]}"
-        following_headings = REQUIRED_ISSUE_BODY_HEADINGS[
-            REQUIRED_ISSUE_BODY_HEADINGS.index(heading) + 1 :
-        ]
-        following_matches = [
-            re.search(rf"^##\s+{re.escape(following)}\s*$", body, re.MULTILINE)
-            for following in following_headings
-        ]
-        insert_at = min(
-            (match.start() for match in following_matches if match is not None),
-            default=len(body),
-        )
-        if insert_at == len(body):
-            body = f"{body}\n\n{section}".strip()
-        else:
-            body = f"{body[:insert_at].rstrip()}\n\n{section}\n\n{body[insert_at:].lstrip()}"
+    body_parts = [preamble] if preamble else []
+    for heading in REQUIRED_ISSUE_BODY_HEADINGS:
+        content = sections.get(heading) or fallback_sections[heading]
+        body_parts.append(f"## {heading}\n\n{content}")
+    body = "\n\n".join(body_parts)
 
     _validate_issue_body_markdown(body)
     return body

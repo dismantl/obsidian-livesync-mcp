@@ -214,6 +214,42 @@ def test_build_issue_payload_fills_all_missing_sections_with_safe_fallbacks():
     assert "Run the relevant local tests" in visible_body
 
 
+def test_build_issue_payload_normalizes_existing_sections_into_canonical_order():
+    decision = CopilotCompatibilityDecision(
+        needs_local_review=True,
+        decision_reason="Relevant upstream code changed.",
+        issue_body_markdown=(
+            "Introductory triage context.\n\n"
+            "## Next Steps\n\n1. Run tests.\n\n"
+            "## Compatibility Assessment\n\nCompatibility review is needed.\n\n"
+            "## Upstream Release Notes\n\nChunk delivery changed.\n\n"
+            "## Watched Areas That Changed\n\nChunking changed.\n\n"
+            "## Upstream Release\n\nLiveSync 0.25.82."
+        ),
+    )
+
+    _, body = build_issue_payload(SAMPLE_EVIDENCE, decision)
+    visible_body = body.split("<details>", 1)[0]
+    heading_positions = [
+        visible_body.index(f"## {heading}\n")
+        for heading in (
+            "Upstream Release",
+            "Upstream Release Notes",
+            "Watched Areas That Changed",
+            "Compatibility Assessment",
+            "Next Steps",
+        )
+    ]
+
+    assert heading_positions == sorted(heading_positions)
+    assert visible_body.startswith(
+        "<!-- upstream-release-watch:dismantl/obsidian-livesync-mcp:0.25.77 -->\n\n"
+        "Introductory triage context."
+    )
+    assert "## Upstream Release Notes\n\nChunk delivery changed." in visible_body
+    assert "## Next Steps\n\n1. Run tests." in visible_body
+
+
 def test_build_issue_payload_redacts_embedded_markers_from_scanner_evidence():
     decision = CopilotCompatibilityDecision(
         needs_local_review=True,
