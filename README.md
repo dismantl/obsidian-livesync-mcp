@@ -79,6 +79,12 @@ export OBSIDIAN_COUCH_PASS="your-password"
 export OBSIDIAN_COUCH_DB="obsidian-vault"    # optional, defaults to "obsidian-vault"
 ```
 
+If LiveSync has `usePathObfuscation` enabled, also set the matching LiveSync passphrase:
+
+```bash
+export OBSIDIAN_OBFUSCATE_PASSPHRASE="your-livesync-passphrase"
+```
+
 ## MCP Server Setup
 
 The server supports two transports: **stdio** (default, for local clients) and **streamable-http** (for remote/networked access).
@@ -300,20 +306,20 @@ LiveSync splits each file into a parent document (metadata + ordered list of chu
 
 Binary chunks are independently base64-encoded byte ranges. Correct reassembly decodes each chunk and joins bytes; joining base64 strings corrupts multi-chunk binaries.
 
-Document IDs are lowercased vault paths. Paths starting with `_` (like `_Changelog/`) get a `/` prefix since CouchDB reserves `_`-prefixed IDs.
+Without path obfuscation, document IDs are lowercased vault paths. Paths starting with `_` (like `_Changelog/`) get a `/` prefix since CouchDB reserves `_`-prefixed IDs. With path obfuscation enabled, set `OBSIDIAN_OBFUSCATE_PASSPHRASE` to the same passphrase used by LiveSync so the tool can generate the matching `f:` document IDs.
 
 ## LiveSync Compatibility
 
-This tool talks directly to CouchDB and must match LiveSync's document format. The following LiveSync settings are **required** for compatibility:
+This tool talks directly to CouchDB and must match LiveSync's document format. The following compatibility constraints apply:
 
-| Setting | Required Value | Default | Notes |
+| Setting | Supported Value | Default | Notes |
 |---------|---------------|---------|-------|
 | `encrypt` | `false` | `true` | E2EE not supported — all data would be unreadable |
-| `usePathObfuscation` | `false` | `true` | Obfuscated doc IDs not supported |
+| `usePathObfuscation` | `false` or `true` | `true` | When enabled, set `OBSIDIAN_OBFUSCATE_PASSPHRASE` to the LiveSync passphrase |
 | `enableCompression` | `false` | `false` | DEFLATE compressed chunks not supported |
 | `handleFilenameCaseSensitive` | `false` | `false` | Doc IDs are always lowercased |
 
-> **Important:** LiveSync defaults to E2EE enabled with path obfuscation. Disable both when setting up your vault for use with this tool.
+> **Important:** LiveSync defaults to E2EE enabled. Disable E2EE when setting up your vault for use with this tool. Path obfuscation may remain enabled when `OBSIDIAN_OBFUSCATE_PASSPHRASE` is configured.
 
 ### Compatible Settings
 
@@ -331,7 +337,6 @@ These settings can be any value — reads always work, writes use LiveSync defau
 | Feature | Impact |
 |---------|--------|
 | End-to-end encryption (E2EE) | All note content is unreadable |
-| Path obfuscation | Cannot locate any documents |
 | Data compression (`enableCompression`) | Chunk data appears garbled |
 | Chunk packs (`chunkpack` type) | Packed chunks are not fetched |
 
