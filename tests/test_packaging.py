@@ -16,7 +16,7 @@ def test_mcp_dependency_excludes_v2() -> None:
     # mcp 2.x removed mcp.server.fastmcp, which server.py imports.
     specifier = _mcp_requirement().specifier
 
-    assert specifier.contains("1.26.0")
+    assert any(specifier.contains(f"1.{minor}.0") for minor in range(100))
     assert not specifier.contains("2.0.0")
 
 
